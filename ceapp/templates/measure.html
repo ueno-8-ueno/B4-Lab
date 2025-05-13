@@ -1,0 +1,68 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Loop Runner GUI</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        button {
+            background-color: #007bff; color: white; padding: 10px 20px;
+            border: none; border-radius: 5px; cursor: pointer; font-size: 16px;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        .message {
+            margin-top: 20px; padding: 15px; border-radius: 5px;
+        }
+        .message.success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .message.error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .message.info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        #loading { display: none; margin-top: 10px; }
+        ul { list-style-type: none; padding-left: 0; }
+        li { background-color: #e9ecef; margin-bottom: 5px; padding: 8px; border-radius: 4px; }
+        li strong { color: #495057; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>測定の実行</h1>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message_text in messages %}
+                    <div class="message {{ category }}">{{ message_text }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        {% if detailed_results %}
+            <h2>詳細結果:</h2>
+            <ul>
+            {% for result in detailed_results %}
+                <li><strong>タスク:</strong> {{ result.task }} - <strong>ステータス:</strong> {{ result.status }} - <strong>詳細:</strong> {{ result.detail }}</li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+
+        <form id="runLoopForm" action="{{ url_for('run_measures') }}" method="POST">
+            <button id="runButton" type="submit">実行</button>
+        </form>
+        <div id="loading">処理を実行中です... しばらくお待ちください。</div>
+
+        <p style="margin-top: 30px; font-size: 0.9em; color: #666;">
+            注: `loop`関数内の`print`文による出力は、Flaskサーバーを実行しているターミナル/コンソールに表示されます。
+        </p>
+    </div>
+
+    <script>
+        document.getElementById('runLoopForm').addEventListener('submit', function() {
+            document.getElementById('runButton').disabled = true;
+            document.getElementById('runButton').innerText = '実行中...';
+            document.getElementById('loading').style.display = 'block';
+        });
+    </script>
+</body>
+</html>
