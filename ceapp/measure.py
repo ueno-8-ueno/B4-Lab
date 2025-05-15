@@ -16,7 +16,6 @@ from flask import Flask, render_template, request, redirect, url_for, flash
 # --- 設定項目 ---
 # Containerlabで起動したコンテナ名に合わせて変更
 CLIENT_CONTAINER_NAME = "r1"  # 例: clab-topo-client
-print(CLIENT_CONTAINER_NAME)#testS
 SERVER_CONTAINER_NAME = "r4"  # 例: clab-topo-server
 
 # サーバーコンテナのIPアドレス (Containerlabの定義から取得するのが望ましいが、ここでは固定値とする)
@@ -140,14 +139,6 @@ def main_loop():
     print(f" Output file: {OUTPUT_CSV_FILE}")
     print("Press Ctrl+C to stop.")
 
-    #iperf3 サーバーがターゲットで実行されているか簡単なチェック (オプション)
-    # print(f"Checking for iperf3 server on {SERVER_CONTAINER_NAME}...")
-    # check_cmd = ["pgrep", "iperf3"]
-    # server_check = run_clab_command(SERVER_CONTAINER_NAME, check_cmd)
-    # if not server_check or server_check.strip() == "":
-    #      print(f"Warning: iperf3 server may not be running on {SERVER_CONTAINER_NAME}.")
-    #      print(f"Consider running: docker exec {SERVER_CONTAINER_NAME} iperf3 -s -D")
-
     # boot up iperf3 cmd in SERVER CONTAINER(for background)
     iperf_server_cmd = ["iperf3", "-sD"]
     run_clab_command(SERVER_CONTAINER_NAME, iperf_server_cmd)
@@ -210,16 +201,16 @@ app.secret_key = 'your_very_secret_key_here' # flashメッセージのために�
 last_detailed_results = None
 
 @app.route('/', methods=['GET'])
-def measure():
+def index():
     global last_detailed_results
     # ページ表示時に前回の詳細結果を渡す
     # flashメッセージは自動でクリアされるが、detailed_resultsは手動でクリア
     results_to_display = last_detailed_results
     last_detailed_results = None # 一度表示したらクリア
-    return render_template('measure.html', detailed_results=results_to_display)
+    return render_template('index.html', detailed_results=results_to_display)
 
-@app.route('/run_measures', methods=['POST'])
-def run_measures():
+@app.route('/measures', methods=['POST'])
+def measures():
     global last_detailed_results
     try:
         print("GUIからLoop実行リクエストを受け付けました。")
@@ -242,4 +233,4 @@ def run_measures():
         flash(error_msg, 'error')
         last_detailed_results = [{"task": "Application Error", "status": "Failed", "detail": str(e)}]
     
-    return redirect(url_for('measure')) # メインページにリダイレクト
+    return redirect(url_for('index')) # メインページにリダイレクト

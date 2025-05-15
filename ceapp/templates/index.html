@@ -3,7 +3,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Loop Runner GUI</title>
+    <title>Run Measures GUI</title>
     <style>
         body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
         .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
@@ -47,7 +47,7 @@
             </ul>
         {% endif %}
 
-        <form id="runLoopForm" action="{{ url_for('run_measures') }}" method="POST">
+        <form id="runLoopForm" action="{{ url_for('measures') }}" method="POST">
             <button id="runButton" type="submit">実行</button>
         </form>
         <div id="loading">処理を実行中です... しばらくお待ちください。</div>
