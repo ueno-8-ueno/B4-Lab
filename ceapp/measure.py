@@ -19,11 +19,11 @@ CLIENT_CONTAINER_NAME = "r1"  # 例: clab-topo-client
 SERVER_CONTAINER_NAME = "r4"  # 例: clab-topo-server
 
 # サーバーコンテナのIPアドレス (Containerlabの定義から取得するのが望ましいが、ここでは固定値とする)
-SERVER_IP = "192.168.7.2" # 例: サーバーコンテナに割り当てられたIP
+SERVER_IP = "192.168.8.2" # 例: サーバーコンテナに割り当てられたIP
 
 MEASUREMENT_INTERVAL_SEC = 1  # 測定間隔（秒）
 PING_COUNT = 1                # pingの試行回数
-IPERF_DURATION_SEC = 10       # iperf3の測定時間（秒）
+IPERF_DURATION_SEC = 1       # iperf3の測定時間（秒）
 OUTPUT_CSV_FILE = "result.csv"
 # --- 設定項目終わり ---
 
@@ -35,7 +35,7 @@ def run_clab_command(container_name, command_list):
     # topology_name = "my_topology" # Containerlabのトポロジ名
     # cmd = ["clab", "exec", "-t", topology_name, f"--label clab-node-name={container_name}", "--"] + command_list
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=MEASUREMENT_INTERVAL_SEC + 10) # タイムアウトを設定
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=MEASUREMENT_INTERVAL_SEC + 1) # タイムアウトを設定
         return result.stdout
     except subprocess.CalledProcessError as e:
         print(f"Error running command {' '.join(command_list)} in {container_name}: {e}")
