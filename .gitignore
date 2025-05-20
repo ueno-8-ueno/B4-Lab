@@ -1,2 +1,5 @@
 *.csv
 __pycache__
+
+*.bak
+/topology/clab-*

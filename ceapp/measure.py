@@ -19,7 +19,7 @@ CLIENT_CONTAINER_NAME = "r1"  # 例: clab-topo-client
 SERVER_CONTAINER_NAME = "r4"  # 例: clab-topo-server
 
 # サーバーコンテナのIPアドレス (Containerlabの定義から取得するのが望ましいが、ここでは固定値とする)
-SERVER_IP = "2001:db8:7::2" # 例: サーバーコンテナに割り当てられたIP
+SERVER_IP = "192.168.7.2" # 例: サーバーコンテナに割り当てられたIP
 
 MEASUREMENT_INTERVAL_SEC = 1  # 測定間隔（秒）
 PING_COUNT = 1                # pingの試行回数
