@@ -1,6 +1,7 @@
 from ceapp import app
 
 if __name__ == '__main__':
-    # host='0.0.0.0' を指定すると、同じネットワーク内の他のPCからもアクセス可能になります。
-    # debug=True は開発時に便利ですが、本番環境ではFalseにしてください。
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Flask開発サーバーのデフォルトはシングルスレッドなので、
+    # バックグラウンドスレッドとリクエスト処理が競合しないように threaded=True を指定
+    # use_reloader=False は、スレッドが複数起動されるのを避けるためにデバッグ時に有効
+    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True, use_reloader=False)
