@@ -13,9 +13,9 @@ from flask import Flask, render_template, request, redirect, url_for, flash
 app.secret_key = 'your_very_secret_key_here_for_measure_py' # flashメッセージのために必要
 
 # --- 設定項目 ---
-CLIENT_CONTAINER_NAME = "r1"
-SERVER_CONTAINER_NAME = "r4"
-SERVER_IP = "192.168.8.2"
+CLIENT_CONTAINER_NAME = "clab-ospf-pc1"
+SERVER_CONTAINER_NAME = "clab-ospf-pc2"
+SERVER_IP = "192.168.12.10"
 MEASUREMENT_INTERVAL_SEC = 1
 PING_COUNT = 1
 IPERF_DURATION_SEC = 1
@@ -64,9 +64,12 @@ def parse_ping_output(ping_output):
         return rtt_avg_ms, packet_loss_percent
 
     # RTT avg
-    rtt_match = re.findall(r'round-trip min/avg/max = [\d.]+/([\d.]+)/[\d.]+ ms', ping_output)
-    if rtt_match:
-        rtt_avg_ms = float(rtt_match[0])
+    rtt_match_alpine = re.findall(r'round-trip min/avg/max = [\d.]+/([\d.]+)/[\d.]+ ms', ping_output)
+    rtt_match_ubuntu = re.findall(r'rtt min/avg/max/mdev = [\d.]+/([\d.]+)/[\d.]+/[\d.]+ ms', ping_output)
+    if rtt_match_alpine:
+        rtt_avg_ms = float(rtt_match_alpine[0])
+    elif rtt_match_ubuntu:
+        rtt_avg_ms = float(rtt_match_ubuntu[0])
 
     # Packet Loss 
     loss_match = re.findall(r'(\d+)% packet loss', ping_output)

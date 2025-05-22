@@ -31,7 +31,7 @@ def run_command(command_list, timeout=10):
 
 def get_clab_containers():
     """Containerlabで管理されていると思われるコンテナ名一覧を取得"""
-    stdout, stderr = run_command(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=r"])
+    stdout, stderr = run_command(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=clab-"])
     if stdout:
         containers = stdout.splitlines()
         print(f"Detected containers: {containers}")
