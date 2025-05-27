@@ -1,12 +1,15 @@
 from ceapp import app
 
-from flask import Flask, render_template, request, flash, redirect, url_for
+from flask import request, jsonify # jsonify をインポート
 # from utils import get_clab_containers, get_links_from_networks, run_command # utils.pyを使う場合
 import subprocess # utilsを使わない場合は直接subprocessを呼ぶ
 import json
 import re
 import os
 
+# app.secret_key の行は __init__.py で設定するため削除
+
+# --- 関数群 (run_command, get_clab_containers, get_container_networks, get_network_info, get_links_from_networks) は変更なし ---
 def run_command(command_list, timeout=10):
     """コマンドを実行し、標準出力を返す"""
     try:
@@ -31,7 +34,7 @@ def run_command(command_list, timeout=10):
 
 def get_clab_containers():
     """Containerlabで管理されていると思われるコンテナ名一覧を取得"""
-    stdout, stderr = run_command(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=r"])
+    stdout, stderr = run_command(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=clab-"])
     if stdout:
         containers = stdout.splitlines()
         print(f"Detected containers: {containers}")
@@ -70,18 +73,16 @@ def get_links_from_networks(containers):
     links = set()
     container_networks_cache = {}
 
-    # ネットワーク情報を事前に取得してキャッシュ
     relevant_networks = set()
     for container in containers:
         nets = get_container_networks(container)
         container_networks_cache[container] = nets
-        relevant_networks.update(n for n in nets if n != 'bridge') # bridgeは無視
+        relevant_networks.update(n for n in nets if n != 'bridge')
 
     network_info_cache = {}
     for net_name in relevant_networks:
          network_info_cache[net_name] = get_network_info(net_name)
 
-    # キャッシュを使ってリンクを推定
     checked_pairs = set()
     for c1 in containers:
         for net_name in container_networks_cache.get(c1, []):
@@ -90,10 +91,8 @@ def get_links_from_networks(containers):
 
             net_info = network_info_cache[net_name]
             if net_info and 'Containers' in net_info:
-                 # このネットワークにいる他のコンテナを探す
                 for c2 in containers:
                     if c1 == c2: continue
-                    # c2 もこのネットワークにいるか？ (IDで確認するのが本当は良い)
                     if net_name in container_networks_cache.get(c2, []):
                         pair = tuple(sorted((c1, c2)))
                         if pair not in checked_pairs:
@@ -104,80 +103,77 @@ def get_links_from_networks(containers):
     print(f"Detected links: {link_list}")
     return link_list
 
-# --- Flask App ---
-#app = Flask(__name__)
-app.secret_key = os.urandom(24) # Flashメッセージ用に必要
 
-@app.route('/insert')
-def insert():
+# --- API Routes ---
+@app.route('/api/insert/topology', methods=['GET'])
+def get_topology():
     containers = get_clab_containers()
-    links = get_links_from_networks(containers) # コンテナリストからリンクを推定
-    return render_template('insert.html', containers=containers, links=links)
+    links = get_links_from_networks(containers)
+    return jsonify({'containers': containers, 'links': links})
 
-@app.route('/inject', methods=['POST'])
-def inject_fault():
-    fault_type = request.form.get('fault_type')
-    target_node = request.form.get('target_node')
-    target_link_str = request.form.get('target_link')
-    target_interface = request.form.get('target_interface_link', 'eth1') # デフォルト'eth1'
+@app.route('/api/insert/fault', methods=['POST'])
+def inject_fault_api():
+    data = request.get_json()
+    fault_type = data.get('fault_type')
+    target_node = data.get('target_node')
+    target_link_str = data.get('target_link')
+    target_interface = data.get('target_interface', 'eth1') # デフォルト'eth1'
 
     command_list = []
     target_display = ""
+    message = ""
+    status = "error" # Default to error
 
     try:
         if fault_type == 'link_down' or fault_type == 'link_up':
             if not target_link_str:
-                flash('Target link must be selected.', 'error')
-                return redirect(url_for('index'))
-            node1, node2 = target_link_str.split('|')
+                return jsonify({'status': 'error', 'message': 'Target link must be selected.'})
+            
+            node1, node2 = target_link_str.split('|') # Reactから "node1|node2" の形式で来る想定
             target_display = f"link between {node1} and {node2} (interface: {target_interface})"
-            # 注意: 両方のコンテナでインターフェースを操作する必要があるかもしれない
-            # ここでは片側(node1)だけ操作する簡易実装
             action = "down" if fault_type == 'link_down' else "up"
             command_list = ["docker", "exec", node1, "ip", "link", "set", target_interface, action]
 
         elif fault_type in ['node_stop', 'node_start', 'node_pause', 'node_unpause']:
             if not target_node:
-                flash('Target node must be selected.', 'error')
-                return redirect(url_for('index'))
+                return jsonify({'status': 'error', 'message': 'Target node must be selected.'})
             target_display = f"node {target_node}"
-            action = fault_type.split('_')[1] # stop, start, pause, unpause
+            action = fault_type.split('_')[1] 
             command_list = ["docker", action, target_node]
-
-        # --- 他の障害タイプのコマンド生成ロジックをここに追加 ---
+        
+        # --- 他の障害タイプのロジック ---
         # elif fault_type == 'cpu_stress':
-        #     duration = request.form.get('cpu_duration', '60')
+        #     duration = data.get('cpu_duration', '60')
         #     target_display = f"node {target_node} (CPU Stress)"
         #     command_list = ["docker", "exec", target_node, "stress-ng", "--cpu", "1", "--cpu-load", "100", "--timeout", f"{duration}s"]
         # elif fault_type == 'bw_limit':
-        #      rate = request.form.get('bw_rate', '1mbit')
-        #      bw_interface = request.form.get('target_interface_bw')
+        #      rate = data.get('bw_rate', '1mbit')
+        #      bw_interface = data.get('target_interface_bw')
         #      if not bw_interface:
-        #           flash('Target interface for bandwidth limit is required.', 'error')
-        #           return redirect(url_for('index'))
+        #           return jsonify({'status': 'error', 'message': 'Target interface for bandwidth limit is required.'})
         #      target_display = f"node {target_node} interface {bw_interface} (BW Limit)"
-        #      # Apply limit command (example using TBF)
         #      command_list = ["docker", "exec", target_node, "tc", "qdisc", "add", "dev", bw_interface, "root", "tbf", "rate", rate, "burst", "32kbit", "latency", "400ms"]
-        #      # Need a corresponding 'delete' command for recovery
 
         else:
-            flash(f'Unknown fault type: {fault_type}', 'error')
-            return redirect(url_for('index'))
+            return jsonify({'status': 'error', 'message': f'Unknown fault type: {fault_type}'})
 
-        # コマンド実行
         if command_list:
             stdout, stderr = run_command(command_list)
-            if stderr is not None and "Error" in stderr: # 簡単なエラーチェック
-                flash(f'Failed to inject {fault_type} on {target_display}. Error: {stderr}', 'error')
-            elif stdout is not None or stderr is not None: # 成功または警告
-                 flash(f'Successfully executed {fault_type} on {target_display}. Output: {stdout or stderr}', 'success')
-            else: # run_command内でエラーがprintされているはず
-                 flash(f'Failed to inject {fault_type} on {target_display}. Check console logs.', 'error')
-
+            if stderr is not None and "Error" in stderr:
+                message = f'Failed to inject {fault_type} on {target_display}. Error: {stderr}'
+                status = 'error'
+            elif stdout is not None or stderr is not None:
+                 message = f'Successfully executed {fault_type} on {target_display}. Output: {stdout or stderr}'
+                 status = 'success'
+            else:
+                 message = f'Failed to inject {fault_type} on {target_display}. Check console logs.'
+                 status = 'error'
         else:
-             flash('Could not generate command for the selected fault.', 'error')
+             message = 'Could not generate command for the selected fault.'
+             status = 'error'
 
     except Exception as e:
-        flash(f'An unexpected error occurred: {str(e)}', 'error')
+        message = f'An unexpected error occurred: {str(e)}'
+        status = 'error'
 
-    return redirect(url_for('index'))
+    return jsonify({'status': status, 'message': message})
