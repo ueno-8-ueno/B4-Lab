@@ -5,29 +5,30 @@ import csv
 import time
 import os
 import json
-import threading # スレッドとイベントのために追加
+import threading
 
 from ceapp import app
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import request, jsonify # jsonify をインポート
 
-app.secret_key = 'your_very_secret_key_here_for_measure_py' # flashメッセージのために必要
+# app.secret_key の行は __init__.py で設定するため削除
 
-# --- 設定項目 ---
+# --- 設定項目 (変更なし) ---
 CLIENT_CONTAINER_NAME = "clab-ospf-pc1"
 SERVER_CONTAINER_NAME = "clab-ospf-pc2"
 SERVER_IP = "192.168.12.10"
 MEASUREMENT_INTERVAL_SEC = 1
 PING_COUNT = 1
 IPERF_DURATION_SEC = 1
-OUTPUT_CSV_FILE = "result.csv"
+OUTPUT_CSV_FILE = "../result.csv" # backendディレクトリからの相対パスになる
 # --- 設定項目終わり ---
 
-# --- グローバル変数 (ループ制御用) ---
+# --- グローバル変数 (変更なし) ---
 loop_thread = None
-stop_event = threading.Event() # ループ停止のためのイベントオブジェクト
-iperf_server_started_flag = False # iperf3サーバーが起動中かどうかのフラグ (measure.py内で管理)
+stop_event = threading.Event()
+iperf_server_started_flag = False
 
-# --- 既存の関数群の修正と追加 ---
+# --- 既存の関数群 (run_clab_command, parse_ping_output, parse_iperf3_json_output, write_log, main_loop_process) は変更なし ---
+# (main_loop_process内のprint文はサーバーコンソールに出力されます)
 def run_clab_command(container_name, command_list, timeout_override=None, check_return_code=True):
     """指定されたコンテナ内でコマンドを実行し、標準出力を返す"""
     cmd = ["docker", "exec", container_name] + command_list
@@ -111,12 +112,14 @@ def parse_iperf3_json_output(iperf_output):
 def write_log(timestamp, source, target, metric, value):
     if value is None:
         return
-    file_exists = os.path.isfile(OUTPUT_CSV_FILE)
+    # backend/result.csv になるようにパスを調整
+    output_file_path = os.path.join(os.path.dirname(__file__), '..', OUTPUT_CSV_FILE)
+    file_exists = os.path.isfile(output_file_path)
     try:
-        with open(OUTPUT_CSV_FILE, 'a', newline='') as csvfile:
+        with open(output_file_path, 'a', newline='') as csvfile:
             fieldnames = ['timestamp', 'source_container', 'target_ip', 'metric', 'value']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            if not file_exists or os.path.getsize(OUTPUT_CSV_FILE) == 0:
+            if not file_exists or os.path.getsize(output_file_path) == 0:
                 writer.writeheader()
             writer.writerow({
                 'timestamp': timestamp,
@@ -126,11 +129,10 @@ def write_log(timestamp, source, target, metric, value):
                 'value': value
             })
     except IOError as e:
-        print(f"Error writing to CSV file {OUTPUT_CSV_FILE}: {e}")
+        print(f"Error writing to CSV file {output_file_path}: {e}")
     except Exception as e:
         print(f"An unexpected error occurred during CSV write: {e}")
 
-# --- main_loop の変更 (スレッド内で実行される関数) ---
 def main_loop_process(stop_event_param):
     """測定を定期的に実行するメインループ (スレッド内で実行される関数)"""
     global iperf_server_started_flag
@@ -141,31 +143,26 @@ def main_loop_process(stop_event_param):
     # iperf3サーバーを起動 (-D でデーモン化)
     print(f"Attempting to start iperf3 server on {SERVER_CONTAINER_NAME}...")
     iperf_server_cmd = ["iperf3", "-s", "-D"]
-    # サーバー起動は失敗しても測定自体は継続するかもしれないので、check_return_code=False
     server_start_output = run_clab_command(SERVER_CONTAINER_NAME, iperf_server_cmd, timeout_override=10, check_return_code=False)
 
     if server_start_output is not None:
-        # 成功時(デーモン化)は標準出力は通常空。エラーは標準エラーに出る。
-        # "Address already in use" は許容する
         if "failed to daemonize" not in server_start_output or "Address already in use" in server_start_output:
             print("iperf3 server started or already running.")
             iperf_server_started_flag = True
         else:
             print(f"Failed to start iperf3 server. Stderr: {server_start_output.strip()}")
-            iperf_server_started_flag = False # 起動失敗
+            iperf_server_started_flag = False
     else:
         print("iperf3 server start command execution failed (e.g., timeout).")
         iperf_server_started_flag = False
 
     if not iperf_server_started_flag:
         print("Warning: iperf3 server is not running. iperf3 tests will likely fail.")
-        # ループは継続するが、iperf3テストは失敗する可能性が高いことを通知
 
     while not stop_event_param.is_set():
         current_timestamp = datetime.datetime.now().isoformat(timespec='seconds')
         print(f"\n[{current_timestamp}] Performing measurements...")
 
-        # --- Ping 測定 ---
         ping_cmd = ["ping", "-c", str(PING_COUNT), "-W", "1", SERVER_IP]
         ping_result = run_clab_command(CLIENT_CONTAINER_NAME, ping_cmd)
         rtt_avg, loss = parse_ping_output(ping_result)
@@ -173,8 +170,7 @@ def main_loop_process(stop_event_param):
         write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "rtt_avg_ms", rtt_avg)
         write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "packet_loss_percent", loss)
 
-        if iperf_server_started_flag: # iperfサーバーが起動している場合のみテスト実行
-            # --- iperf3 測定 (TCP スループット) ---
+        if iperf_server_started_flag:
             iperf_tcp_cmd = ["iperf3", "-c", SERVER_IP, "-t", str(IPERF_DURATION_SEC), "-J"]
             iperf_tcp_result = run_clab_command(CLIENT_CONTAINER_NAME, iperf_tcp_cmd)
             tcp_throughput, _, _, _ = parse_iperf3_json_output(iperf_tcp_result)
@@ -185,7 +181,6 @@ def main_loop_process(stop_event_param):
             else:
                 print("  iperf3 TCP -> Measurement failed or produced no result.")
 
-            # --- iperf3 測定 (UDP スループット、ジッター、ロス) ---
             udp_bandwidth = "10M"
             iperf_udp_cmd = ["iperf3", "-c", SERVER_IP, "-t", str(IPERF_DURATION_SEC), "-u", "-b", udp_bandwidth, "-J"]
             iperf_udp_result = run_clab_command(CLIENT_CONTAINER_NAME, iperf_udp_cmd)
@@ -203,82 +198,79 @@ def main_loop_process(stop_event_param):
         else:
             print("  iperf3 tests skipped because iperf3 server is not running.")
 
-        # 次の測定まで待機 (stop_eventを短い間隔でチェックできるようにする)
         for _ in range(MEASUREMENT_INTERVAL_SEC):
             if stop_event_param.is_set():
                 break
-            time.sleep(1) # 1秒ごとに停止イベントをチェック
+            time.sleep(1)
     
-    print("Measurement loop stopping as requested by GUI...")
-    # iperf3サーバーの停止は /stop_measures ルートで行う
+    print("Measurement loop stopping as requested...")
+
 
 def is_loop_running_check():
-    """ループが実行中かどうかを返す"""
     global loop_thread
     return loop_thread is not None and loop_thread.is_alive()
 
-# --- Flask ルート ---
-@app.route('/', methods=['GET'])
-def index():
-    return render_template('index.html', loop_is_running=is_loop_running_check())
+# --- API Routes ---
+@app.route('/api/measure/status', methods=['GET'])
+def measure_status():
+    return jsonify({'is_running': is_loop_running_check()})
 
-@app.route('/start_measures', methods=['POST'])
+@app.route('/api/measure/start', methods=['POST'])
 def start_measures_route():
     global loop_thread, stop_event, iperf_server_started_flag
     if is_loop_running_check():
-        flash('Measurement is already running.', 'info')
+        return jsonify({'status': 'info', 'message': 'Measurement is already running.'})
+    
+    print("API: Start measurement request received.")
+    stop_event.clear()
+    iperf_server_started_flag = False
+    loop_thread = threading.Thread(target=main_loop_process, args=(stop_event,), daemon=True)
+    loop_thread.start()
+    time.sleep(0.5) # Allow thread to start
+    
+    if is_loop_running_check():
+        return jsonify({'status': 'success', 'message': 'Measurement started.'})
     else:
-        print("GUI: Start measurement request received.")
-        stop_event.clear()  # 停止イベントをクリア
-        iperf_server_started_flag = False # iperfサーバー起動フラグをリセット
-        loop_thread = threading.Thread(target=main_loop_process, args=(stop_event,), daemon=True)
-        loop_thread.start()
-        # スレッドが実際に開始されるまで少し待つ (より堅牢な方法も検討可)
-        time.sleep(0.5)
-        if is_loop_running_check():
-            flash('Measurement started.', 'success')
-        else: # スレッドがすぐに終了した場合 (例えばiperfサーバー起動に致命的な問題があった場合など)
-            flash('Failed to start measurement loop. Check console for errors.', 'error')
-            # 念のためスレッドオブジェクトをNoneに戻す
-            loop_thread = None
-            iperf_server_started_flag = False # 確実にリセット
-    return redirect(url_for('index'))
+        loop_thread = None
+        iperf_server_started_flag = False
+        return jsonify({'status': 'error', 'message': 'Failed to start measurement loop. Check console for errors.'})
 
-@app.route('/stop_measures', methods=['POST'])
+@app.route('/api/measure/stop', methods=['POST'])
 def stop_measures_route():
     global loop_thread, stop_event, iperf_server_started_flag
     if not is_loop_running_check():
-        flash('Measurement is not running.', 'info')
-    else:
-        print("GUI: Stop measurement request received.")
-        stop_event.set() # ループに停止を通知
-        if loop_thread:
-            loop_thread.join(timeout=10) # スレッドの終了を最大10秒待つ
-        
-        if loop_thread and loop_thread.is_alive():
-            flash('Failed to stop measurement thread gracefully. It might still be running.', 'error')
-            print("Warning: Measurement thread did not terminate in time.")
-        else:
-            flash('Measurement loop stopping...', 'success') # joinが成功したら
-            loop_thread = None # スレッドオブジェクトをクリア
+        return jsonify({'status': 'info', 'message': 'Measurement is not running.'})
 
-        # iperf3サーバーを停止 (サーバーコンテナ内で pkill を使用)
-        if iperf_server_started_flag: # 自分で起動した(と記録されている)場合のみ停止試行
-            print(f"Attempting to stop iperf3 server on {SERVER_CONTAINER_NAME}...")
-            kill_iperf_cmd = ["pkill", "-SIGTERM", "iperf3"] # SIGTERMで穏やかに終了試行
-            # サーバー停止コマンドの成否はここではあまり重要視しない (失敗してもユーザーには通知)
-            kill_output = run_clab_command(SERVER_CONTAINER_NAME, kill_iperf_cmd, timeout_override=5, check_return_code=False)
-            if kill_output is not None and "iperf3: no process found" not in kill_output.lower() and "terminated" in kill_output.lower():
-                 print("iperf3 server stop command sent and likely terminated.")
-                 flash('Measurement stopped. iperf3 server stop command sent.', 'success')
-            elif kill_output is not None and "iperf3: no process found" in kill_output.lower():
-                 print("iperf3 server was not found running or already stopped.")
-                 flash('Measurement stopped. iperf3 server was not found running.', 'success')
-            else:
-                 print(f"iperf3 server stop command result: {kill_output.strip() if kill_output else 'No output/Timeout'}. Manual check may be needed.")
-                 flash('Measurement stopped. iperf3 server may require manual stop.', 'warning')
-            iperf_server_started_flag = False # 停止試行後はフラグをリセット
-        else: # iperfサーバーが起動していなかったか、既に停止処理済みの場合
-            if not (loop_thread and loop_thread.is_alive()): # ループも正常終了した場合
-                flash('Measurement stopped successfully.', 'success')
-    return redirect(url_for('index'))
+    print("API: Stop measurement request received.")
+    stop_event.set()
+    if loop_thread:
+        loop_thread.join(timeout=10)
+    
+    final_message = ""
+    status_type = "success"
+
+    if loop_thread and loop_thread.is_alive():
+        final_message += 'Failed to stop measurement thread gracefully. '
+        status_type = "error"
+        print("Warning: Measurement thread did not terminate in time.")
+    else:
+        final_message += 'Measurement loop stopping... '
+        loop_thread = None
+
+    if iperf_server_started_flag:
+        print(f"Attempting to stop iperf3 server on {SERVER_CONTAINER_NAME}...")
+        kill_iperf_cmd = ["pkill", "-SIGTERM", "iperf3"]
+        kill_output = run_clab_command(SERVER_CONTAINER_NAME, kill_iperf_cmd, timeout_override=5, check_return_code=False)
+        if kill_output is not None and "iperf3: no process found" not in kill_output.lower() and "terminated" in kill_output.lower():
+             final_message += 'iperf3 server stop command sent and likely terminated.'
+        elif kill_output is not None and "iperf3: no process found" in kill_output.lower():
+             final_message += 'iperf3 server was not found running or already stopped.'
+        else:
+             final_message += 'iperf3 server may require manual stop. Check console.'
+             if status_type == "success": status_type = "warning" # Downgrade if not error already
+        iperf_server_started_flag = False
+    else:
+        if not (loop_thread and loop_thread.is_alive()):
+            final_message += 'Measurement stopped successfully.'
+            
+    return jsonify({'status': status_type, 'message': final_message.strip()})
