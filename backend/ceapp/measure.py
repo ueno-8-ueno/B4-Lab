@@ -34,7 +34,7 @@ def run_clab_command(container_name, command_list, timeout_override=None, check_
     cmd = ["docker", "exec", container_name] + command_list
     try:
         # MEASUREMENT_INTERVAL_SECが小さい場合でも、コマンド実行にはある程度の時間を見込む
-        timeout_val = timeout_override if timeout_override is not None else max(5, MEASUREMENT_INTERVAL_SEC + 2)
+        timeout_val = timeout_override if timeout_override is not None else max(5, MEASUREMENT_INTERVAL_SEC)
         result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout_val)
 
         if check_return_code and result.returncode != 0:
@@ -109,24 +109,29 @@ def parse_iperf3_json_output(iperf_output):
 
     return throughput_bps, jitter_ms, lost_packets, lost_percent
 
-def write_log(timestamp, source, target, metric, value):
-    if value is None:
-        return
+def write_log(timestamp, source, target, rtt_avg_ms, packet_loss_percent, tcp_throughput_mbps, udp_throughput_mbps, udp_jitter_ms, udp_lost_packets, udp_lost_percent):
+    #if value is None:
+    #    return
     # backend/result.csv になるようにパスを調整
     output_file_path = os.path.join(os.path.dirname(__file__), '..', OUTPUT_CSV_FILE)
     file_exists = os.path.isfile(output_file_path)
     try:
         with open(output_file_path, 'a', newline='') as csvfile:
-            fieldnames = ['timestamp', 'source_container', 'target_ip', 'metric', 'value']
+            fieldnames = ['timestamp', 'source_container', 'target_container', 'rtt_avg_ms', 'packet_loss_percent', 'tcp_throughput_mbps', 'udp_throughput_mbps', 'udp_jitter_ms', 'udp_lost_packets', 'udp_lost_percent']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             if not file_exists or os.path.getsize(output_file_path) == 0:
                 writer.writeheader()
             writer.writerow({
                 'timestamp': timestamp,
                 'source_container': source,
-                'target_ip': target,
-                'metric': metric,
-                'value': value
+                'target_container': target,
+                'rtt_avg_ms': rtt_avg_ms,
+                'packet_loss_percent': packet_loss_percent,
+                'tcp_throughput_mbps': tcp_throughput_mbps,
+                'udp_throughput_mbps': udp_throughput_mbps,
+                'udp_jitter_ms': udp_jitter_ms,
+                'udp_lost_packets': udp_lost_packets,
+                'udp_lost_percent': udp_lost_percent
             })
     except IOError as e:
         print(f"Error writing to CSV file {output_file_path}: {e}")
@@ -167,8 +172,8 @@ def main_loop_process(stop_event_param):
         ping_result = run_clab_command(CLIENT_CONTAINER_NAME, ping_cmd)
         rtt_avg, loss = parse_ping_output(ping_result)
         print(f"  Ping -> RTT Avg: {rtt_avg} ms, Loss: {loss}%")
-        write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "rtt_avg_ms", rtt_avg)
-        write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "packet_loss_percent", loss)
+        #write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "rtt_avg_ms", rtt_avg)
+        #write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "packet_loss_percent", loss)
 
         if iperf_server_started_flag:
             iperf_tcp_cmd = ["iperf3", "-c", SERVER_IP, "-t", str(IPERF_DURATION_SEC), "-J"]
@@ -177,7 +182,7 @@ def main_loop_process(stop_event_param):
             if tcp_throughput is not None:
                 tcp_throughput_mbps = tcp_throughput / 1_000_000
                 print(f"  iperf3 TCP -> Throughput: {tcp_throughput_mbps:.2f} Mbps")
-                write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "tcp_throughput_mbps", round(tcp_throughput_mbps, 2))
+                #write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "tcp_throughput_mbps", round(tcp_throughput_mbps, 2))
             else:
                 print("  iperf3 TCP -> Measurement failed or produced no result.")
 
@@ -189,10 +194,11 @@ def main_loop_process(stop_event_param):
                 udp_throughput_mbps = udp_throughput / 1_000_000
                 print(f"  iperf3 UDP -> Throughput: {udp_throughput_mbps:.2f} Mbps (Target: {udp_bandwidth})")
                 print(f"  iperf3 UDP -> Jitter: {jitter} ms, Lost: {lost_pkts} ({lost_pct}%)")
-                write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "udp_throughput_mbps", round(udp_throughput_mbps, 2))
-                write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "udp_jitter_ms", jitter)
-                write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "udp_lost_packets", lost_pkts)
-                write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_IP, "udp_lost_percent", lost_pct)
+                #write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_CONTAINER_NAME, "udp_throughput_mbps", round(udp_throughput_mbps, 2))
+                #write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_CONTAINER_NAME, "udp_jitter_ms", jitter)
+                #write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_CONTAINER_NAME, "udp_lost_packets", lost_pkts)
+                #write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_CONTAINER_NAME, "udp_lost_percent", lost_pct)
+                write_log(current_timestamp, CLIENT_CONTAINER_NAME, SERVER_CONTAINER_NAME, rtt_avg, loss, round(tcp_throughput_mbps, 2), round(udp_throughput_mbps, 2), jitter, lost_pkts, lost_pct)
             else:
                 print("  iperf3 UDP -> Measurement failed or produced no result.")
         else:
