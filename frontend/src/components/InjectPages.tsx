@@ -71,34 +71,33 @@ function InjectPage({ apiBaseUrl }) {
 
   return (
     <div>
-      <h1>Containerlab Chaos Injector</h1>
+      <h1>障害生成画面</h1>
       {message.text && (
         <div className={`message ${message.type}`}>
           {message.text}
         </div>
       )}
 
-      <h2>Detected Topology</h2>
-      <h3>Containers:</h3>
+      <h2>検出したトポロジ</h2>
+      <h3>コンテナ一覧:</h3>
       {containers.length > 0 ? (
         containers.map(container => <div className="container" key={container}>{container}</div>)
       ) : (
-        <p>No Containerlab containers detected (or Docker error).</p>
+        <p>コンテナが検出されませんでした (またはDockerエラー).</p>
       )}
 
-      <h3>Links (Estimated):</h3>
-      <p><i>Note: Interface names for links are not reliably detected. Link Down/Up actions might target incorrect interfaces.</i></p>
+      <h3>仮想リンク一覧 (推定):</h3>
       {links.length > 0 ? (
         links.map(link => <div className="link" key={`${link[0]}-${link[1]}`}>{`${link[0]} <--> ${link[1]}`}</div>)
       ) : (
-        <p>No links detected between containers.</p>
+        <p>コンテナ間のリンクが検出されません.</p>
       )}
 
       <div className="form-section">
-        <h2>Inject Fault</h2>
+        <h2>障害生成</h2>
         <form onSubmit={handleSubmit}>
           <div>
-            <label htmlFor="fault_type">Fault Type:</label>
+            <label htmlFor="fault_type">障害パターン:</label>
             <select id="fault_type" name="fault_type" value={faultType} onChange={e => setFaultType(e.target.value)}>
               <option value="link_down">Link Down</option>
               <option value="link_up">Link Up</option>
@@ -114,7 +113,7 @@ function InjectPage({ apiBaseUrl }) {
           {(faultType === 'link_down' || faultType === 'link_up') && (
             <div id="link_target">
               <div>
-                <label htmlFor="target_link">Target Link:</label>
+                <label htmlFor="target_link">ターゲットリンク:</label>
                 <select id="target_link" name="target_link" value={targetLink} onChange={e => setTargetLink(e.target.value)} disabled={links.length === 0}>
                   {links.map(link => (
                     <option key={`${link[0]}|${link[1]}`} value={`${link[0]}|${link[1]}`}>
@@ -124,7 +123,7 @@ function InjectPage({ apiBaseUrl }) {
                 </select>
               </div>
               <div>
-                <label htmlFor="target_interface_link">Interface Name (Guess):</label>
+                <label htmlFor="target_interface_link">インターフェース名:</label>
                 <input type="text" id="target_interface_link" name="target_interface_link" value={targetInterfaceLink} onChange={e => setTargetInterfaceLink(e.target.value)} placeholder="e.g., eth1 (Best Guess)" />
               </div>
             </div>
@@ -132,7 +131,7 @@ function InjectPage({ apiBaseUrl }) {
 
           {(faultType.includes('node_') /*|| faultType === 'cpu_stress' || faultType === 'bw_limit'*/) && (
             <div id="node_target">
-              <label htmlFor="target_node">Target Node:</label>
+              <label htmlFor="target_node">ターゲットノード:</label>
               <select id="target_node" name="target_node" value={targetNode} onChange={e => setTargetNode(e.target.value)} disabled={containers.length === 0}>
                 {containers.map(container => (
                   <option key={container} value={container}>{container}</option>

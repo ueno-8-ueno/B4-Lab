@@ -74,10 +74,7 @@ function MeasurePage({ apiBaseUrl }) {
           {isLoading && isRunning ? '停止処理中...' : !isRunning ? '停止' : '停止'}
         </button>
       </div>
-       {isLoading && <p>サーバーと通信中...</p>}
-      <p style={{ marginTop: '30px', fontSize: '0.9em', color: '#666' }}>
-        注: バックエンドの`print`文による出力は、Flaskサーバーを実行しているターミナル/コンソールに表示されます。
-      </p>
+       {isLoading && <p>測定中...</p>}
     </div>
   );
 }
