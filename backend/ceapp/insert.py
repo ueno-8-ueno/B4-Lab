@@ -1,27 +1,30 @@
 from ceapp import app
 
 from flask import request, jsonify # jsonify をインポート
-# from utils import get_clab_containers, get_links_from_networks, run_command # utils.pyを使う場合
-import subprocess # utilsを使わない場合は直接subprocessを呼ぶ
+import subprocess
 import json
 import re
 import os
+import ipaddress #  IPアドレス/ネットワーク操作のために追加
 
 # app.secret_key の行は __init__.py で設定するため削除
 
-# --- 関数群 (run_command, get_clab_containers, get_container_networks, get_network_info, get_links_from_networks) は変更なし ---
 def run_command(command_list, timeout=10):
     """コマンドを実行し、標準出力を返す"""
     try:
         print(f"Executing command: {' '.join(command_list)}") # 実行コマンドのログ出力
+        # check=True のままでも、CalledProcessErrorで stderr を補足できる
         result = subprocess.run(command_list, capture_output=True, text=True, check=True, timeout=timeout)
         print(f"Stdout: {result.stdout.strip()}")
-        print(f"Stderr: {result.stderr.strip()}")
-        return result.stdout.strip(), result.stderr.strip()
+        if result.stderr: # 標準エラーも出力があればログに残す
+            print(f"Stderr: {result.stderr.strip()}")
+        return result.stdout.strip(), result.stderr.strip() if result.stderr else ""
     except subprocess.CalledProcessError as e:
         print(f"Error running command {' '.join(command_list)}: {e}")
+        print(f"Stdout (if any): {e.stdout.strip()}")
         print(f"Stderr: {e.stderr.strip()}")
-        return None, e.stderr.strip()
+        # stdout もエラーメッセージを含むことがあるので、両方返すことを検討
+        return e.stdout.strip() if e.stdout else None, e.stderr.strip()
     except subprocess.TimeoutExpired:
         print(f"Timeout running command {' '.join(command_list)}")
         return None, "Command timed out"
@@ -34,73 +37,127 @@ def run_command(command_list, timeout=10):
 
 def get_clab_containers():
     """Containerlabで管理されていると思われるコンテナ名一覧を取得"""
+    # Docker ps コマンドが失敗した場合 (Dockerデーモンが動いていない等) も考慮
     stdout, stderr = run_command(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=clab-"])
     if stdout:
         containers = stdout.splitlines()
+        # 空行や不正な行を除外することが望ましい場合がある
+        containers = [c.strip() for c in containers if c.strip()]
         print(f"Detected containers: {containers}")
         return containers
-    print(f"Failed to get containers: {stderr}")
+    # stderr にエラーメッセージがある場合と、単に該当コンテナがない場合を区別
+    if stderr and "Cannot connect to the Docker daemon" in stderr:
+        print(f"Failed to connect to Docker daemon: {stderr}")
+    elif stderr:
+        print(f"Failed to get containers, stderr: {stderr}")
+    else:
+        print("No clab containers found.")
     return []
 
-def get_container_networks(container_name):
-    """指定されたコンテナが接続しているDockerネットワーク名を取得"""
-    cmd = ["docker", "inspect", container_name, "--format", "{{json .NetworkSettings.Networks}}"]
+def get_container_interface_details(container_name):
+    """
+    指定されたコンテナのインターフェース詳細 (名前, IP/CIDR, MAC) を取得。
+    docker exec <container> ip -j addr を使用。
+    """
+    # ipコマンドがコンテナ内に存在しない場合も考慮
+    cmd = ["docker", "exec", container_name, "ip", "-j", "addr"]
     stdout, stderr = run_command(cmd)
-    if stdout:
-        try:
-            networks = json.loads(stdout)
-            return list(networks.keys())
-        except json.JSONDecodeError:
-            print(f"Error decoding network JSON for {container_name}: {stderr}")
-    return []
+    interfaces = []
 
-def get_network_info(network_name):
-    """指定されたDockerネットワークの詳細情報を取得"""
-    cmd = ["docker", "network", "inspect", network_name, "--format", "{{json .}}"]
-    stdout, stderr = run_command(cmd)
     if stdout:
         try:
-            network_data = json.loads(stdout)
-            if isinstance(network_data, list):
-                 return network_data[0] if network_data else None
-            return network_data
+            data = json.loads(stdout)
+            for iface_data in data:
+                # ループバックインターフェースやIPアドレスを持たないインターフェースはスキップ
+                if iface_data.get("link_type") == "loopback" or not iface_data.get("operstate") == "UP":
+                    continue
+
+                if_name = iface_data.get("ifname")
+                mac_address = iface_data.get("address") # MACアドレス
+
+                ip_infos = []
+                for addr_info in iface_data.get("addr_info", []):
+                    # IPv4アドレスのみを対象とする (family "inet")
+                    if addr_info.get("family") == "inet":
+                        ip_cidr = f"{addr_info['local']}/{addr_info['prefixlen']}"
+                        ip_infos.append(ip_cidr)
+                
+                # IPアドレスを持つインターフェースのみリストに追加
+                if if_name and ip_infos:
+                    interfaces.append({
+                        "name": if_name,
+                        "mac": mac_address,
+                        "ips": ip_infos
+                    })
         except json.JSONDecodeError:
-            print(f"Error decoding network JSON for {network_name}: {stderr}")
-    return None
+            print(f"Error decoding 'ip addr' JSON for {container_name}. Output: {stdout[:200]}... Stderr: {stderr}")
+        except KeyError as e:
+            print(f"KeyError parsing 'ip addr' JSON for {container_name}: {e}")
+    elif stderr: # stdoutがなくてもstderrにエラー情報がある場合
+        print(f"Failed to get interface details for {container_name} using 'ip addr'. Stderr: {stderr}")
+    else: # stdoutもstderrも空だがコマンド実行に失敗したケース(run_command内でログ出力済みのはず)
+        print(f"No output from 'ip addr' for {container_name}, and no explicit error captured.")
+
+    return interfaces
 
 def get_links_from_networks(containers):
-    """コンテナ間の接続（リンク）情報を推定する (簡易版)"""
+    """
+    コンテナ間の接続（リンク）情報をIPサブネットベースで推定する。
+    各コンテナのインターフェース情報を基に、同じサブネットを共有するコンテナペアをリンクと見なす。
+    """
+    all_interfaces_details = {}
+    for container_name in containers:
+        details = get_container_interface_details(container_name)
+        if details: # インターフェース詳細が取得できたコンテナのみを対象
+            all_interfaces_details[container_name] = details
+    
+    # サブネットをキーとし、そのサブネットに属する(コンテナ名, インターフェース名, IPアドレスオブジェクト)のリストを値とする辞書
+    subnet_map = {} 
+
+    for container_name, ifaces in all_interfaces_details.items():
+        for iface in ifaces:
+            for ip_cidr_str in iface["ips"]:
+                try:
+                    # ip_interfaceオブジェクト (例: '192.168.1.5/24')
+                    ip_interface = ipaddress.ip_interface(ip_cidr_str)
+                    # ip_networkオブジェクト (例: '192.168.1.0/24')
+                    ip_network = ip_interface.network 
+                    
+                    # リンクローカルアドレス(169.254.0.0/16)やループバック(127.0.0.0/8)は除外することが多い
+                    if ip_network.is_link_local or ip_network.is_loopback:
+                        continue
+                        
+                    if ip_network not in subnet_map:
+                        subnet_map[ip_network] = []
+                    
+                    subnet_map[ip_network].append({
+                        "container": container_name, 
+                        "interface_name": iface["name"], # どのインターフェースか
+                        "ip_object": ip_interface.ip     # IPアドレスオブジェクト
+                    })
+                except ValueError as e:
+                    # 不正なIP/CIDRフォーマットの場合のログ
+                    print(f"Invalid IP/CIDR format '{ip_cidr_str}' for {container_name}/{iface['name']}: {e}")
+                    continue
+    
     links = set()
-    container_networks_cache = {}
+    for subnet, connected_entities in subnet_map.items():
+        # このサブネットに接続されているユニークなコンテナ名のリスト
+        containers_in_subnet = sorted(list(set(entity["container"] for entity in connected_entities)))
 
-    relevant_networks = set()
-    for container in containers:
-        nets = get_container_networks(container)
-        container_networks_cache[container] = nets
-        relevant_networks.update(n for n in nets if n != 'bridge')
-
-    network_info_cache = {}
-    for net_name in relevant_networks:
-         network_info_cache[net_name] = get_network_info(net_name)
-
-    checked_pairs = set()
-    for c1 in containers:
-        for net_name in container_networks_cache.get(c1, []):
-            if net_name == 'bridge' or net_name not in network_info_cache:
-                continue
-
-            net_info = network_info_cache[net_name]
-            if net_info and 'Containers' in net_info:
-                for c2 in containers:
-                    if c1 == c2: continue
-                    if net_name in container_networks_cache.get(c2, []):
-                        pair = tuple(sorted((c1, c2)))
-                        if pair not in checked_pairs:
-                             links.add(pair)
-                             checked_pairs.add(pair)
+        # このサブネットにちょうど2つの異なるコンテナが接続されていれば、
+        # それらをP2Pリンクと見なす (Containerlabの一般的な構成を想定)
+        if len(containers_in_subnet) == 2:
+            c1, c2 = containers_in_subnet[0], containers_in_subnet[1]
+            link_pair = tuple(sorted((c1, c2))) # コンテナ名のペアをソートしてタプル化
+            links.add(link_pair)
+        # elif len(containers_in_subnet) > 2:
+            # 3つ以上のコンテナが同じサブネットにいる場合（例：共通のブリッジ）
+            # これらをどう扱うかは設計次第。ここではP2Pリンクのみを検出対象とする。
+            # print(f"Subnet {subnet} is shared by more than 2 containers: {containers_in_subnet}. Not treated as a direct P2P link in this context.")
 
     link_list = [list(link) for link in links]
-    print(f"Detected links: {link_list}")
+    print(f"Detected links (IP subnet based): {link_list}")
     return link_list
 
 
