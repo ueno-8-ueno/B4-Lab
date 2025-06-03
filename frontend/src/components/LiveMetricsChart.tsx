@@ -9,9 +9,7 @@ import {
   Title,
   Tooltip,
   Legend,
-  TimeScale,
-  //ChartOptions,
-  //ChartData
+  TimeScale
 } from 'chart.js';
 import type { ChartData as ChartJsChartData, ChartOptions as ChartJsChartOptions } from 'chart.js';
 import 'chartjs-adapter-date-fns';
@@ -74,7 +72,7 @@ const LiveMetricsChart: React.FC<LiveMetricsChartProps> = ({
     .slice(-maxDataPointsToShow)
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-  const chartData: LineChartData = { // 修正: 具体的な型を使用
+  const chartData: LineChartData = {
     labels: processedDataPoints.map(dp => dp.timestamp),
     datasets: [
       {
