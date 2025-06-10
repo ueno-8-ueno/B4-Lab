@@ -15,7 +15,7 @@ CLIENT_CONTAINER_NAME = "clab-ospf-pc1"
 SERVER_CONTAINER_NAME = "clab-ospf-pc2"
 SERVER_IP = "192.168.12.10"
 MEASUREMENT_INTERVAL_SEC = 1
-PING_COUNT = 1
+PING_COUNT = 10
 IPERF_DURATION_SEC = 1
 OUTPUT_CSV_FILE = "../../result.csv"
 # --- 設定項目終わり ---
@@ -161,8 +161,10 @@ def main_loop_process(stop_event_param):
         raw_tcp_throughput, raw_udp_throughput, raw_jitter, raw_lost_pkts, raw_lost_pct = None, None, None, None, None
         tcp_throughput_mbps, udp_throughput_mbps, jitter, lost_pkts, lost_pct = None, None, None, None, None
 
-        ping_cmd = ["ping", "-c", str(PING_COUNT), "-W", "1", SERVER_IP]
+        ping_cmd = ["ping", "-c", str(PING_COUNT), "-q", "-i", str(1/PING_COUNT), SERVER_IP]
         ping_result = run_clab_command(CLIENT_CONTAINER_NAME, ping_cmd, timeout_override=max(3, PING_COUNT + 1)) # Ping timeout調整
+        print("tetetetete")
+        print(ping_result)###
         rtt_avg, loss = parse_ping_output(ping_result)
         print(f"  Ping -> RTT Avg: {rtt_avg} ms, Loss: {loss}%")
 

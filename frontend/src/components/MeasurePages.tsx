@@ -28,7 +28,7 @@ const MeasurePage: React.FC<ApiProps> = ({ apiBaseUrl }) => {
     serverContainerName: "clab-ospf-pc2", // 初期値を設定
     serverIp: "192.168.12.10",           // 初期値を設定
     measurementIntervalSec: 1,        // 初期値を設定
-    pingCount: 1,                     // 初期値を設定
+    pingCount: 10,                     // 初期値を設定
     iperfDurationSec: 1,              // 初期値を設定
   });
   
