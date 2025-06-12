@@ -398,19 +398,24 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
       </div>
 
       <h2>検出したトポロジ</h2>
-      <h3>コンテナ一覧:</h3>
-      {containers.length > 0 ? (
-        containers.map(container => <div className="container" key={container}>{container}</div>)
-      ) : (
-        <p>コンテナが検出されていません。上記ボタンでトポロジ情報を取得してください。</p>
-      )}
-      <h3>仮想リンク一覧 (推定):</h3>
-      {links.length > 0 ? (
-        links.map(link => <div className="link" key={`${link[0]}-${link[1]}`}>{`${link[0]} <--> ${link[1]}`}</div>)
-      ) : (
-        <p>コンテナ間のリンクが検出されません。</p>
-      )}
-
+      <div style={{display: 'flex'}}>
+        <div style={{marginRight: '100px'}}>
+          <h3>コンテナ一覧:</h3>
+          {containers.length > 0 ? (
+            containers.map(container => <div className="container" key={container}>{container}</div>)
+          ) : (
+            <p>コンテナが検出されていません。上記ボタンでトポロジ情報を取得してください。</p>
+          )}
+        </div>
+        <div>
+          <h3>仮想リンク一覧 (推定):</h3>
+          {links.length > 0 ? (
+            links.map(link => <div className="link" key={`${link[0]}-${link[1]}`}>{`${link[0]} <--> ${link[1]}`}</div>)
+          ) : (
+            <p>コンテナ間のリンクが検出されません。</p>
+          )}
+        </div>
+      </div>
 
       <div className="form-section">
         <h2>障害生成リスト</h2>
