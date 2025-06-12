@@ -6,11 +6,12 @@ import json
 import re
 import os
 import ipaddress
+import requests # --- 追加: measure.pyのAPIを叩くために必要 ---
 
 def run_command(command_list, timeout=10):
     """コマンドを実行し、標準出力を返す"""
     try:
-        print(f"Executing command: {' '.join(command_list)}")
+        #print(f"Executing command: {' '.join(command_list)}")
         result = subprocess.run(command_list, capture_output=True, text=True, check=True, timeout=timeout)
         #print(f"Stdout: {result.stdout.strip()}")
         if result.stderr:
@@ -37,7 +38,7 @@ def get_clab_containers():
     if stdout:
         containers = stdout.splitlines()
         containers = [c.strip() for c in containers if c.strip()]
-        print(f"Detected containers: {containers}")
+        #print(f"Detected containers: {containers}")
         return containers
     if stderr and "Cannot connect to the Docker daemon" in stderr:
         print(f"Failed to connect to Docker daemon: {stderr}")
@@ -106,7 +107,7 @@ def get_links_from_networks(containers):
         if len(unique_containers) == 2:
             links.add(tuple(unique_containers))
     link_list = [list(link) for link in links]
-    print(f"Detected links (IP subnet based): {link_list}")
+    #print(f"Detected links (IP subnet based): {link_list}")
     return link_list
 
 # --- API Routes ---
@@ -121,153 +122,167 @@ def get_topology():
 
     return jsonify({'containers': containers, 'links': links, 'interfaces_by_container': interfaces_by_container})
 
+# --- measure.py のAPIを呼び出して障害フラグを設定/解除する関数 ---
+MEASURE_API_BASE_URL = "http://localhost:5000/api/measure" # measure.pyが動作するURL
+
+def set_measure_fault_flag(is_injected_flag: bool):
+    try:
+        response = requests.post(f"{MEASURE_API_BASE_URL}/set_fault_flag", json={'is_injected': is_injected_flag}, timeout=2)
+        if response.status_code == 200:
+            #print(f"Successfully set fault_injected_flag in measure.py to {is_injected_flag}")
+            return True
+        else:
+            print(f"Failed to set fault_injected_flag in measure.py. Status: {response.status_code}, Msg: {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling measure.py API to set fault flag: {e}")
+    return False
+
 @app.route('/api/insert/fault', methods=['POST'])
 def inject_fault_api():
-    data = request.get_json()
-    fault_type = data.get('fault_type')
-    
-    # 共通的に使われる可能性のあるパラメータ
-    target_node = data.get('target_node') # link_down/up以外の多くの障害で対象ノードとして使用
-    target_interface = data.get('target_interface') # link_down/up, tc関連で使用
+    # --- リクエストデータはリスト形式で複数の障害定義を受け取る ---
+    fault_definitions = request.get_json() 
+    if not isinstance(fault_definitions, list):
+        return jsonify({'status': 'error', 'message': 'Request body must be a list of fault definitions.'}), 400
 
-    # link_down/up 専用
-    target_link_str = data.get('target_link')
-    
-    # --- tc: add_latency 用パラメータ ---
-    latency_ms = data.get('latency_ms')
-    jitter_ms = data.get('jitter_ms') # オプション
-    correlation_percent = data.get('correlation_percent') # オプション
-    # --- tc: add_latency 用パラメータ終わり ---
+    results = [] # --- 各障害注入の結果を格納 ---
+    any_fault_injected_successfully = False # 少なくとも1つの障害が成功したか
 
-    # --- tc: limit_bandwidth 用パラメータ ---
-    bandwidth_rate_kbit = data.get('bandwidth_rate_kbit')
-    bandwidth_burst_bytes = data.get('bandwidth_burst_bytes') # 例: "32kb" or "32000"
-    bandwidth_latency_ms = data.get('bandwidth_latency_ms') # TBFのlatencyパラメータ
-    # --- tc: limit_bandwidth 用パラメータ終わり ---
+    # --- 最初の障害注入の前にフラグをTrueに設定 ---
+    if fault_definitions: # 注入する障害が1つ以上ある場合のみフラグを立てる
+        set_measure_fault_flag(True)
 
-
-    command_list = []
-    target_display = ""
-    message = ""
-    status = "error"
-
-    try:
-        if fault_type == 'link_down' or fault_type == 'link_up':
-            if not target_link_str or not target_interface: # --- target_interfaceも必須チェック ---
-                return jsonify({'status': 'error', 'message': 'Target link and interface must be selected/entered for link operations.'})
-            # target_link_str から操作対象のノードを特定する (例: リンクの片側)
-            # 実際の操作は、選択されたリンクのどちらかのノードで行うか、あるいは両方か、設計による
-            # ここでは、フロントエンドで target_node も選択させるか、リンクの片側を target_node として扱う
-            if not target_node: # もし target_node が別途指定されていなければ、リンクの片側を使う
-                 node_to_act_on = target_link_str.split('|')[0]
-            else: # target_node が指定されていればそちらを優先
-                 node_to_act_on = target_node
-
-            target_display = f"{fault_type} on link {target_link_str.replace('|','-')} interface {target_interface} of node {node_to_act_on}"
-            action = "down" if fault_type == 'link_down' else "up"
-            command_list = ["docker", "exec", node_to_act_on, "ip", "link", "set", target_interface, action]
-
-        elif fault_type in ['node_stop', 'node_start', 'node_pause', 'node_unpause']:
-            if not target_node:
-                return jsonify({'status': 'error', 'message': 'Target node must be selected.'})
-            target_display = f"node {target_node}"
-            action = fault_type.split('_')[1] 
-            command_list = ["docker", action, target_node]
+    for fault_data in fault_definitions:
+        fault_type = fault_data.get('fault_type')
         
-        # --- 追加: 遅延付与 (Add Latency) の処理 ---
-        elif fault_type == 'add_latency':
-            if not (target_node and target_interface and latency_ms):
-                return jsonify({'status': 'error', 'message': 'Target Node, Target Interface, and Latency (ms) are required for adding latency.'})
-            try:
-                lat_val = int(latency_ms)
-                if lat_val <= 0: raise ValueError("Latency must be positive.")
-            except ValueError:
-                return jsonify({'status': 'error', 'message': f'Invalid Latency value: {latency_ms}. Must be a positive integer.'})
+        target_node = fault_data.get('target_node')
+        target_interface = fault_data.get('target_interface')
+        target_link_str = fault_data.get('target_link')
+        
+        latency_ms = fault_data.get('latency_ms')
+        jitter_ms = fault_data.get('jitter_ms')
+        correlation_percent = fault_data.get('correlation_percent')
+        
+        bandwidth_rate_kbit = fault_data.get('bandwidth_rate_kbit')
+        bandwidth_burst_bytes = fault_data.get('bandwidth_burst_bytes')
+        bandwidth_latency_ms = fault_data.get('bandwidth_latency_ms')
 
-            target_display = f"latency ({latency_ms}ms) on node {target_node}, interface {target_interface}"
+        command_list = []
+        target_display = ""
+        current_message = ""
+        current_status = "error"
+
+        try:
+            if fault_type == 'link_down' or fault_type == 'link_up':
+                if not target_link_str or not target_interface:
+                    current_message = 'Target link and interface must be selected/entered for link operations.'
+                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_link_str or 'N/A'})
+                    continue # 次の障害定義へ
+                
+                node_to_act_on = target_node or target_link_str.split('|')[0]
+                target_display = f"{fault_type} on link {target_link_str.replace('|','-')} interface {target_interface} of node {node_to_act_on}"
+                action = "down" if fault_type == 'link_down' else "up"
+                command_list = ["docker", "exec", node_to_act_on, "ip", "link", "set", target_interface, action]
+
+            elif fault_type in ['node_stop', 'node_start', 'node_pause', 'node_unpause']:
+                if not target_node:
+                    current_message = 'Target node must be selected.'
+                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': 'N/A'})
+                    continue
+                target_display = f"node {target_node}"
+                action = fault_type.split('_')[1] 
+                command_list = ["docker", action, target_node]
             
-            # tcコマンドの構築 (netem)
-            # 既存のqdiscを置き換えるので、まず削除を試みる (冪等性のため。失敗しても続行)
-            # run_command(["docker", "exec", target_node, "tc", "qdisc", "del", "dev", target_interface, "root"], check_return_code=False) # 古い設定をクリア (エラーは無視)
-            
-            tc_cmd_parts = ["docker", "exec", target_node, "tc", "qdisc", "add", "dev", target_interface, "root", "netem", "delay", f"{latency_ms}ms"]
-            if jitter_ms:
+            elif fault_type == 'add_latency':
+                if not (target_node and target_interface and latency_ms):
+                    current_message = 'Target Node, Target Interface, and Latency (ms) are required.'
+                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"})
+                    continue
                 try:
-                    jit_val = int(jitter_ms)
-                    if jit_val > 0: tc_cmd_parts.extend(["jitter", f"{jit_val}ms"])
-                except ValueError: app.logger.warning(f"Invalid jitter value '{jitter_ms}', ignoring.")
-            if correlation_percent:
-                try:
-                    corr_val = int(correlation_percent)
-                    if 0 <= corr_val <= 100: tc_cmd_parts.extend(["correlation", f"{corr_val}%"])
-                except ValueError: app.logger.warning(f"Invalid correlation value '{correlation_percent}', ignoring.")
-            
-            command_list = tc_cmd_parts
-            message += f"Attempting to add latency on {target_node}/{target_interface}. Previous qdisc (if any) on root will be replaced. "
-        # --- 追加終わり ---
+                    lat_val = int(latency_ms); assert lat_val > 0
+                except: current_message = f'Invalid Latency: {latency_ms}'; results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display':target_display}); continue
 
-        # --- 追加: 帯域制限 (Limit Bandwidth) の処理 ---
-        elif fault_type == 'limit_bandwidth':
-            if not (target_node and target_interface and bandwidth_rate_kbit):
-                return jsonify({'status': 'error', 'message': 'Target Node, Target Interface, and Bandwidth Rate (kbit) are required for limiting bandwidth.'})
-            try:
-                rate_val = int(bandwidth_rate_kbit)
-                if rate_val <= 0: raise ValueError("Bandwidth rate must be positive.")
-            except ValueError:
-                return jsonify({'status': 'error', 'message': f'Invalid Bandwidth Rate value: {bandwidth_rate_kbit}. Must be a positive integer.'})
+                target_display = f"latency ({latency_ms}ms) on {target_node}/{target_interface}"
+                tc_cmd_parts = ["docker","exec",target_node,"tc","qdisc","add","dev",target_interface,"root","netem","delay",f"{latency_ms}ms"]
+                if jitter_ms:
+                    try: jit_val = int(jitter_ms); assert jit_val > 0; tc_cmd_parts.extend(["jitter", f"{jit_val}ms"])
+                    except: app.logger.warning(f"Invalid jitter '{jitter_ms}', ignoring.")
+                if correlation_percent:
+                    try: corr_val = int(correlation_percent); assert 0 <= corr_val <= 100; tc_cmd_parts.extend(["correlation", f"{corr_val}%"])
+                    except: app.logger.warning(f"Invalid correlation '{correlation_percent}', ignoring.")
+                command_list = tc_cmd_parts
+                current_message += f"Attempting to add latency on {target_node}/{target_interface}. "
 
-            target_display = f"bandwidth limit ({bandwidth_rate_kbit}kbit) on node {target_node}, interface {target_interface}"
+            elif fault_type == 'limit_bandwidth':
+                if not (target_node and target_interface and bandwidth_rate_kbit):
+                    current_message = 'Target Node, Interface, and Rate (kbit) are required.'
+                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"})
+                    continue
+                try: rate_val = int(bandwidth_rate_kbit); assert rate_val > 0
+                except: current_message = f'Invalid Rate: {bandwidth_rate_kbit}'; results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display':target_display}); continue
 
-            # tcコマンドの構築 (tbf)
-            # run_command(["docker", "exec", target_node, "tc", "qdisc", "del", "dev", target_interface, "root"], check_return_code=False) # 古い設定をクリア (エラーは無視)
+                target_display = f"bandwidth limit ({bandwidth_rate_kbit}kbit) on {target_node}/{target_interface}"
+                burst = bandwidth_burst_bytes or f"{int(bandwidth_rate_kbit) * 1000 // 8 // 10}"
+                tbf_latency = bandwidth_latency_ms or "50ms"
+                command_list = ["docker","exec",target_node,"tc","qdisc","add","dev",target_interface,"root","tbf", 
+                                "rate",f"{bandwidth_rate_kbit}kbit","burst",str(burst),"latency",str(tbf_latency)]
+                current_message += f"Attempting to limit bandwidth on {target_node}/{target_interface}. "
 
-            # バーストサイズとTBFレイテンシのデフォルト値
-            burst = bandwidth_burst_bytes or f"{int(bandwidth_rate_kbit) * 1000 // 8 // 10}" # レートの1/10秒分程度 (bytes)
-            tbf_latency = bandwidth_latency_ms or "50ms"
-
-            tc_cmd_parts = ["docker", "exec", target_node, "tc", "qdisc", "add", "dev", target_interface, "root", "tbf", 
-                            "rate", f"{bandwidth_rate_kbit}kbit", "burst", str(burst), "latency", str(tbf_latency)]
-            
-            command_list = tc_cmd_parts
-            message += f"Attempting to limit bandwidth on {target_node}/{target_interface}. Previous qdisc (if any) on root will be replaced. "
-        # --- 追加終わり ---
-
-        # --- 追加: tc設定解除 ---
-        elif fault_type == 'tc_clear':
-            if not (target_node and target_interface):
-                return jsonify({'status': 'error', 'message': 'Target Node and Target Interface are required for clearing tc rules.'})
-            target_display = f"tc rules on node {target_node}, interface {target_interface}"
-            command_list = ["docker", "exec", target_node, "tc", "qdisc", "del", "dev", target_interface, "root"]
-            message += f"Attempting to clear tc qdisc on {target_node}/{target_interface}. "
-        # --- 追加終わり ---
-
-
-        else:
-            return jsonify({'status': 'error', 'message': f'Unknown fault type: {fault_type}'})
-
-        if command_list:
-            stdout, stderr = run_command(command_list)
-            # tcコマンドは成功時にもstderrに何か出力することがあるので、厳密なエラー判定が難しい
-            # "RTNETLINK answers: File exists" は、既に同じqdiscが存在する場合のエラーで、実質的には成功とみなせる場合もある
-            if stderr and "file exists" in stderr.lower() and ("add" in command_list or "change" in command_list):
-                message += f'Executed {fault_type} on {target_display}, but a qdisc might have already existed. Output: {stdout or stderr}'
-                status = 'warning' # 成功に近いが警告
-            elif stderr and any(err_keyword in stderr.lower() for err_keyword in ["error", "failed", "no such", "cannot", "invalid", "unknown"]):
-                message += f'Failed to inject {fault_type} on {target_display}. Error: {stderr}'
-                status = 'error'
-            elif stdout is None and stderr is None and fault_type != 'tc_clear': # tc_clear は成功時出力なしがありうる
-                message += f'Command execution for {fault_type} on {target_display} likely timed out or failed with no output.'
-                status = 'error'
+            elif fault_type == 'tc_clear':
+                if not (target_node and target_interface):
+                    current_message = 'Target Node and Interface are required for tc_clear.'
+                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"})
+                    continue
+                target_display = f"tc rules on {target_node}/{target_interface}"
+                command_list = ["docker", "exec", target_node, "tc", "qdisc", "del", "dev", target_interface, "root"]
+                current_message += f"Attempting to clear tc qdisc on {target_node}/{target_interface}. "
             else:
-                 message += f'Successfully executed {fault_type} on {target_display}. Output: {stdout or stderr}'
-                 status = 'success'
-        else:
-             message = 'Could not generate command for the selected fault.'
-             status = 'error'
+                current_message = f'Unknown fault type: {fault_type}'
+                results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': 'N/A'})
+                continue
 
-    except Exception as e:
-        message = f'An unexpected error occurred: {str(e)}'
-        status = 'error'
-        app.logger.error(f"Inject fault API error: {e}", exc_info=True)
+            if command_list:
+                stdout, stderr = run_command(command_list)
+                if stderr and "file exists" in stderr.lower() and ("add" in command_list or "change" in command_list):
+                    current_message += f'Executed, but qdisc might have already existed. Output: {stdout or stderr}'
+                    current_status = 'warning'
+                    any_fault_injected_successfully = True # 警告でも一応成功扱いにするか検討
+                elif stderr and any(err_keyword in stderr.lower() for err_keyword in ["error", "failed", "no such", "cannot", "invalid", "unknown"]):
+                    current_message += f'Failed. Error: {stderr}'
+                    current_status = 'error'
+                elif stdout is None and stderr is None and fault_type != 'tc_clear':
+                    current_message += 'Command likely timed out or failed with no output.'
+                    current_status = 'error'
+                else:
+                     current_message += f'Successfully executed. Output: {stdout or stderr}'
+                     current_status = 'success'
+                     any_fault_injected_successfully = True
+            else:
+                 current_message = 'Could not generate command.'
+                 current_status = 'error'
+        except Exception as e:
+            current_message = f'Unexpected error: {str(e)}'
+            current_status = 'error'
+            app.logger.error(f"Inject fault API error for {fault_type}: {e}", exc_info=True)
+        
+        results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message.strip(), 'target_display': target_display})
+    # --- ループ処理終わり ---
 
-    return jsonify({'status': status, 'message': message.strip()})
+    # --- 全体の結果メッセージを生成 ---
+    final_summary_message = f"Fault injection process completed. {len(results)} fault(s) attempted. "
+    success_count = sum(1 for r in results if r['status'] == 'success' or r['status'] == 'warning')
+    final_summary_message += f"{success_count} succeeded (or with warnings). "
+    
+    detailed_messages = [f"  - {r['fault_type']} on {r['target_display']}: {r['status'].upper()} - {r['message']}" for r in results]
+    
+    # 全体としてのステータス (一つでもエラーがあればエラー、そうでなければ成功)
+    overall_status = 'error' if any(r['status'] == 'error' for r in results) else 'success'
+    if success_count > 0 and overall_status == 'error': # 一部は成功したが全体ではエラー
+        overall_status = 'warning' # または 'partial_success'のようなカスタムステータス
+
+    # --- 障害注入が全く成功しなかった場合はフラグをFalseに戻すことを検討 ---
+    # if not any_fault_injected_successfully and fault_definitions:
+    #     set_measure_fault_flag(False)
+    #     final_summary_message += " No faults were successfully injected, fault flag reset to False."
+    # --- (今回はこのリセットロジックは入れないでおく) ---
+
+    return jsonify({'status': overall_status, 'message': final_summary_message, 'details': results, 'detailed_messages_for_display': "\n".join(detailed_messages)})
