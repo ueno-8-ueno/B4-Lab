@@ -12,31 +12,50 @@ import threading # 時間制限付きループ解除のため
 # (run_command, get_clab_containers, get_container_interface_details は変更なしと仮定)
 # (get_detailed_links_from_networks は詳細なリンク情報を返すものを想定)
 def run_command(command_list, timeout=10):
+    """コマンドを実行し、標準出力を返す"""
     try:
-        print(f"Executing command: {' '.join(command_list)}")
+        #print(f"Executing command: {' '.join(command_list)}") # 実行コマンドのログ出力
         result = subprocess.run(command_list, capture_output=True, text=True, check=True, timeout=timeout)
-        print(f"Stdout: {result.stdout.strip()}")
-        if result.stderr: print(f"Stderr: {result.stderr.strip()}")
+        #print(f"Stdout: {result.stdout.strip()}") # 標準出力のログ出力
+        if result.stderr: # 標準エラーも出力があればログに残す
+            print(f"Stderr: {result.stderr.strip()}")
         return result.stdout.strip(), result.stderr.strip() if result.stderr else ""
     except subprocess.CalledProcessError as e:
         print(f"Error running command {' '.join(command_list)}: {e}")
-        print(f"Stdout (if any): {e.stdout.strip()}"); print(f"Stderr: {e.stderr.strip()}")
+        #print(f"Stdout (if any): {e.stdout.strip()}") # エラー時の標準出力
+        print(f"Stderr: {e.stderr.strip()}") # エラー時の標準エラー
         return e.stdout.strip() if e.stdout else None, e.stderr.strip()
-    except subprocess.TimeoutExpired: print(f"Timeout: {' '.join(command_list)}"); return None, "Command timed out"
-    except FileNotFoundError: print(f"Error: Cmd not found: {command_list[0]}"); return None, f"Cmd not found: {command_list[0]}"
-    except Exception as e: print(f"Unexpected error: {e}"); return None, str(e)
+    except subprocess.TimeoutExpired:
+        print(f"Timeout running command {' '.join(command_list)}")
+        return None, "Command timed out"
+    except FileNotFoundError:
+        print(f"Error: Command '{command_list[0]}' not found.")
+        return None, f"Command '{command_list[0]}' not found."
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return None, str(e)
 
 def get_clab_containers():
+    """Containerlabで管理されていると思われるコンテナ名一覧を取得"""
     stdout, stderr = run_command(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=clab-"])
     if stdout:
-        containers = [c.strip() for c in stdout.splitlines() if c.strip()]
-        print(f"Detected containers: {containers}"); return containers
-    if stderr and "Cannot connect" in stderr: print(f"Docker daemon error: {stderr}")
-    elif stderr: print(f"Failed to get containers: {stderr}")
-    else: print("No clab containers found.")
+        containers = stdout.splitlines()
+        containers = [c.strip() for c in containers if c.strip()]
+        #print(f"Detected containers: {containers}")
+        return containers
+    if stderr and "Cannot connect to the Docker daemon" in stderr: # Dockerデーモン接続エラー
+        print(f"Failed to connect to Docker daemon: {stderr}")
+    elif stderr:
+        print(f"Failed to get containers, stderr: {stderr}")
+    else:
+        print("No clab containers found.")
     return []
 
 def get_container_interface_details(container_name):
+    """
+    指定されたコンテナのインターフェース詳細 (名前, IP/CIDR, MAC) を取得。
+    docker exec <container> ip -j addr を使用。
+    """
     cmd = ["docker", "exec", container_name, "ip", "-j", "addr"]
     stdout, stderr = run_command(cmd)
     interfaces = []
@@ -53,7 +72,10 @@ def get_container_interface_details(container_name):
     else: print(f"No IF details output for {container_name}")
     return interfaces
 
-def get_detailed_links_from_networks(containers): # L3ループでネクストホップ特定に使うため詳細版を想定
+def get_detailed_links_from_networks(containers):
+    """
+    コンテナ間の接続（リンク）情報と、そのリンクで使用されているIPアドレスを推定する。
+    """
     all_interfaces_details_map = {}
     for container_name in containers:
         details = get_container_interface_details(container_name)
@@ -106,7 +128,7 @@ def get_detailed_links_from_networks(containers): # L3ループでネクスト�
                         node2_name: {'if_name': node2_info['if_name'], 'ip_cidr': node2_info['ip_cidr'], 'ip_address': node2_info['ip_address']}
                     }
                 })
-    print(f"Detected detailed links: {json.dumps(detailed_links, indent=2)}")
+    #print(f"Detected detailed links: {json.dumps(detailed_links, indent=2)}") # デバッグ時はコメント解除
     return detailed_links
 
 
@@ -124,7 +146,7 @@ def set_measure_fault_flag(is_injected_flag: bool):
     try:
         response = requests.post(f"{MEASURE_API_BASE_URL}/set_fault_flag", json={'is_injected': is_injected_flag}, timeout=2)
         if response.status_code == 200:
-            print(f"Successfully set fault_injected_flag in measure.py to {is_injected_flag}")
+            #print(f"Successfully set fault_injected_flag in measure.py to {is_injected_flag}")
             return True
         else:
             print(f"Failed to set fault_injected_flag in measure.py. Status: {response.status_code}, Msg: {response.text}")
@@ -144,10 +166,7 @@ def inject_fault_api():
     if fault_definitions: 
         set_measure_fault_flag(True)
 
-    # ルーティングループの場合、事前にトポロジ情報を取得しておく
-    # (複数のループ障害がリストに含まれる場合、毎回取得するのは非効率だが、シンプルさのため)
-    # (より最適化するなら、ループの最初に一度だけ取得する)
-    _current_detailed_links_for_loop = None # ループ障害でのみ使用
+    _current_detailed_links_for_loop = None 
 
     for fault_data in fault_definitions: 
         fault_type = fault_data.get('fault_type')
@@ -166,18 +185,20 @@ def inject_fault_api():
 
         loop_node1_name = fault_data.get('loop_node1')
         loop_node2_name = fault_data.get('loop_node2')
-        loop_dummy_dest_ip = fault_data.get('loop_dummy_dest_ip', "10.255.255.255/32") 
+        loop_dummy_dest_ip = fault_data.get('loop_dummy_dest_ip', "192.168.7.2/32") 
         loop_duration_sec = fault_data.get('loop_duration_sec', 10) 
+        loop_ping_target_ip = fault_data.get('loop_ping_target_ip')
+        loop_ping_count = fault_data.get('loop_ping_count', 5) 
 
         command_list_node1 = [] 
         command_list_node2 = []
+        ping_command_during_loop = [] 
         additional_commands_after_delay = [] 
         target_display = ""
         current_message = "" 
         current_status = "error" 
 
         if fault_type == 'routing_loop_timed' and _current_detailed_links_for_loop is None: 
-            # 最初のループ障害処理時にトポロジ情報を取得
             _current_containers_for_loop = get_clab_containers() 
             _current_detailed_links_for_loop = get_detailed_links_from_networks(_current_containers_for_loop if _current_containers_for_loop else [])
 
@@ -256,7 +277,7 @@ def inject_fault_api():
                     results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': loop_node1_name})
                     continue
                 
-                duration_val_for_loop = 10 # default
+                duration_val_for_loop = 10 
                 try:
                     duration_val_for_loop = int(loop_duration_sec)
                     if duration_val_for_loop <= 0: raise ValueError("Duration must be positive.")
@@ -268,7 +289,7 @@ def inject_fault_api():
                 target_display = f"timed routing loop ({duration_val_for_loop}s) between {loop_node1_name} and {loop_node2_name} for dummy dest {loop_dummy_dest_ip}"
 
                 link_info_for_loop = None
-                if _current_detailed_links_for_loop: # Ensure link info is available
+                if _current_detailed_links_for_loop: 
                     for link in _current_detailed_links_for_loop: 
                         nodes_in_link = sorted(link['nodes'])
                         selected_nodes_sorted = sorted([loop_node1_name, loop_node2_name])
@@ -301,6 +322,15 @@ def inject_fault_api():
                 additional_commands_after_delay.append(del_command_node2)
 
                 current_message += f"Setting up timed loop. Next hops: {loop_node1_name}->{next_hop_on_node1_to_node2}, {loop_node2_name}->{next_hop_on_node2_to_node1}. "
+
+                if loop_ping_target_ip and loop_ping_count:
+                    try:
+                        ping_c = int(loop_ping_count)
+                        if ping_c > 0:
+                            ping_command_during_loop = ["docker", "exec", "-it", loop_node1_name, "ping", "-c", str(ping_c), "-i", "0.2", "-W", "1", loop_ping_target_ip]
+                            current_message += f"Will also attempt to ping {loop_ping_target_ip} ({ping_c} times) from {loop_node1_name} during the loop. "
+                    except ValueError:
+                        app.logger.warning(f"Invalid loop_ping_count value '{loop_ping_count}', skipping ping during loop.")
             else:
                 current_message = f'Unknown fault type: {fault_type}'
                 results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': 'N/A'})
@@ -309,6 +339,8 @@ def inject_fault_api():
             cmds_to_run_now = []
             if command_list_node1: cmds_to_run_now.append(command_list_node1)
             if command_list_node2: cmds_to_run_now.append(command_list_node2)
+            if ping_command_during_loop and fault_type == 'routing_loop_timed': # ping コマンドをリストの最後に追加
+                cmds_to_run_now.append(ping_command_during_loop)
             
             if cmds_to_run_now:
                 all_step_successful = True
@@ -317,10 +349,17 @@ def inject_fault_api():
                     node_name_for_log = cmd_to_run[2] 
                     if stdout: current_message += f" stdout({node_name_for_log}): {stdout}."
                     if stderr: current_message += f" stderr({node_name_for_log}): {stderr}."
+                    
+                    is_ping_cmd = cmd_to_run[3] == "ping" if len(cmd_to_run) > 3 else False
+
                     if stderr and any(err_keyword in stderr.lower() for err_keyword in ["error", "failed", "no such", "cannot", "invalid"]):
-                        all_step_successful = False
-                        break 
-                    elif stdout is None and stderr is None and fault_type != 'tc_clear':
+                        if not is_ping_cmd: 
+                            all_step_successful = False
+                            break 
+                        else: 
+                            current_message += f" (Ping to {loop_ping_target_ip} might have failed or timed out from {node_name_for_log})."
+
+                    elif stdout is None and stderr is None and fault_type != 'tc_clear' and not is_ping_cmd:
                         all_step_successful = False
                         current_message += f" Command on {node_name_for_log} failed with no output."
                         break
@@ -334,19 +373,21 @@ def inject_fault_api():
                             print(f"Executing delayed cleanup for routing loop after {duration} seconds...")
                             for cmd_del in commands_to_del_list:
                                 print(f"  Deleting route: {' '.join(cmd_del)}")
-                                _, del_err = run_command(cmd_del)
+                                del_stdout, del_err = run_command(cmd_del)
                                 if del_err:
-                                    print(f"  Error deleting route: {del_err}")
+                                    print(f"  Error deleting route: {del_err}. Stdout: {del_stdout}")
+                                elif del_stdout:
+                                    print(f"  Delete route stdout: {del_stdout}")
                             print("Delayed cleanup finished.")
                         
-                        # duration_val_for_loop はこのスコープで未定義になるので、fault_dataから再度取得
                         loop_duration_from_data = int(fault_data.get('loop_duration_sec', 10)) 
                         timer = threading.Timer(loop_duration_from_data, execute_delayed_commands, args=[list(additional_commands_after_delay), loop_duration_from_data])
                         timer.start()
                         current_message += f" Loop cleanup scheduled in {loop_duration_from_data} seconds."
-                else:
+                else: 
                     current_status = 'error'
-                    current_message += ' Initial command(s) failed.'
+                    if not ("Ping to" in current_message): 
+                        current_message += ' One or more setup commands failed.'
             elif not command_list_node1 and not command_list_node2:
                  current_message = 'Could not generate command.'
                  current_status = 'error'

@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, memo } from 'react';
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 
-// --- インターフェース定義 (変更なし) ---
 interface MessageState {
   text: string;
   type: 'success' | 'error' | 'info' | 'warning' | '';
@@ -36,17 +35,18 @@ interface FaultConfig {
   bandwidth_rate_kbit: string | number;
   bandwidth_burst_bytes: string | number;
   bandwidth_latency_ms: string | number;
-  // L3ループ関連のパラメータ (前回の要件で追加されたもの)
   loop_node1: string;
   loop_node2: string;
   loop_dummy_dest_ip: string;
   loop_duration_sec: string | number;
+  loop_ping_target_ip?: string; 
+  loop_ping_count?: string | number; 
 }
 
 const DEFAULT_FAULT_CONFIG: Omit<FaultConfig, 'id'> = {
     fault_type: 'link_down',
     target_node: '',
-    target_interface: '',
+    target_interface: '', 
     target_link: '',
     latency_ms: 100,
     jitter_ms: '',
@@ -54,20 +54,19 @@ const DEFAULT_FAULT_CONFIG: Omit<FaultConfig, 'id'> = {
     bandwidth_rate_kbit: 1000,
     bandwidth_burst_bytes: '',
     bandwidth_latency_ms: '50ms',
-    loop_node1: '', // L3ループ用デフォルト
+    loop_node1: '',
     loop_node2: '',
     loop_dummy_dest_ip: '192.168.7.2/32',
-    loop_duration_sec: 5,
+    loop_duration_sec: 10,
+    loop_ping_target_ip: '192.168.7.2/32', 
+    loop_ping_count: 5,      
 };
 
 const TOPOLOGY_SESSION_KEY_PREFIX = 'injectPage_topology_';
-// --- インターフェース定義終わり ---
 
-// --- 変更: FaultConfigBlock を InjectPage コンポーネントの外で定義 ---
 interface FaultConfigBlockProps {
-    // config prop は初期値としてのみ使用し、変更は onConfigChange で通知する
-    initialConfig: FaultConfig; // 初期設定値
-    onConfigChange: (id: string, field: keyof Omit<FaultConfig, 'id'>, value: any) => void; // 親への通知用
+    initialConfig: FaultConfig; 
+    onConfigChange: (id: string, field: keyof Omit<FaultConfig, 'id'>, value: any) => void; 
     onRemoveConfig: (id: string) => void;
     allContainers: string[];
     allLinks: string[][];
@@ -82,7 +81,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
     const [nodeInterfaces, setNodeInterfaces] = useState<string[]>([]);
 
     useEffect(() => {
-        setLocalConfig(initialConfig); // 親から渡される初期値が変更された場合にローカルも追従
+        setLocalConfig(initialConfig); 
     }, [initialConfig]);
 
     useEffect(() => {
@@ -97,10 +96,9 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
         if (field === 'target_node') {
             const newNodeInterfaces = interfacesByNode[value as string] || [];
             newTargetInterface = newNodeInterfaces.length > 0 ? newNodeInterfaces[0] : '';
-            // target_node 変更時は target_interface も更新して親に通知
             setLocalConfig(prev => ({ ...prev, ...newConfigPart, target_interface: newTargetInterface }));
             onConfigChange(localConfig.id, field, value);
-            onConfigChange(localConfig.id, 'target_interface', newTargetInterface); // IFも通知
+            onConfigChange(localConfig.id, 'target_interface', newTargetInterface); 
         } else {
             setLocalConfig(prev => ({ ...prev, ...newConfigPart }));
             onConfigChange(localConfig.id, field, value);
@@ -113,7 +111,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
         localConfig.fault_type.startsWith('tc_') || 
         localConfig.fault_type === 'add_latency' || 
         localConfig.fault_type === 'limit_bandwidth' ||
-        localConfig.fault_type === 'routing_loop_timed' ||
+        localConfig.fault_type === 'routing_loop_timed' || 
         showLinkTargetFields;
 
     const showInterfaceSelector = localConfig.fault_type === 'add_latency' || localConfig.fault_type === 'limit_bandwidth' || localConfig.fault_type === 'tc_clear' || showLinkTargetFields;
@@ -145,7 +143,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                 </select>
             </div>
 
-            {showNodeSelector && (
+            {showNodeSelector && (localConfig.fault_type !== 'routing_loop_timed') && 
                 <div>
                     <label htmlFor={`target_node-${localConfig.id}`}>ターゲットノード:</label>
                     <select id={`target_node-${localConfig.id}`} value={localConfig.target_node}
@@ -155,7 +153,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                         {allContainers.map(c => <option key={`${localConfig.id}-node-${c}`} value={c}>{c}</option>)}
                     </select>
                 </div>
-            )}
+            }
             {showInterfaceSelector && (
                 <div>
                     <label htmlFor={`target_interface-${localConfig.id}`}>ターゲットインターフェース:</label>
@@ -197,16 +195,28 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                 <>
                     <div><label htmlFor={`loop_node1-${localConfig.id}`}>ループノード1:</label><select id={`loop_node1-${localConfig.id}`} value={localConfig.loop_node1} onChange={e => handleLocalChange('loop_node1', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{allContainers.map(c => <option key={`${localConfig.id}-ln1-${c}`} value={c}>{c}</option>)}</select></div>
                     <div><label htmlFor={`loop_node2-${localConfig.id}`}>ループノード2:</label><select id={`loop_node2-${localConfig.id}`} value={localConfig.loop_node2} onChange={e => handleLocalChange('loop_node2', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{allContainers.map(c => <option key={`${localConfig.id}-ln2-${c}`} value={c}>{c}</option>)}</select></div>
-                    <div><label htmlFor={`loop_dummy_dest_ip-${localConfig.id}`}>ダミー宛先IP (CIDR):</label><input type="text" id={`loop_dummy_dest_ip-${localConfig.id}`} value={localConfig.loop_dummy_dest_ip} onChange={e => handleLocalChange('loop_dummy_dest_ip', e.target.value)} placeholder="e.g., 192.168.7.2/32" disabled={isFormDisabled} /></div>
+                    <div><label htmlFor={`loop_dummy_dest_ip-${localConfig.id}`}>ダミー宛先IP (CIDR):</label><input type="text" id={`loop_dummy_dest_ip-${localConfig.id}`} value={localConfig.loop_dummy_dest_ip} onChange={e => handleLocalChange('loop_dummy_dest_ip', e.target.value)} placeholder="e.g., 10.255.255.255/32" disabled={isFormDisabled} /></div>
                     <div><label htmlFor={`loop_duration_sec-${localConfig.id}`}>ループ持続時間 (秒):</label><input type="number" id={`loop_duration_sec-${localConfig.id}`} value={localConfig.loop_duration_sec} onChange={e => handleLocalChange('loop_duration_sec', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
+                    <hr style={{margin: "10px 0"}} />
+                    <p style={{fontSize: "0.9em", color: "#333", fontWeight: "bold"}}>ループ中Ping観測 (任意):</p>
+                    <div>
+                        <label htmlFor={`loop_ping_target_ip-${localConfig.id}`}>Ping宛先IP:</label>
+                        <input type="text" id={`loop_ping_target_ip-${localConfig.id}`} value={localConfig.loop_ping_target_ip || ''}
+                               onChange={e => handleLocalChange('loop_ping_target_ip', e.target.value)}
+                               placeholder="e.g., 8.8.8.8 or another node" disabled={isFormDisabled} />
+                    </div>
+                    <div>
+                        <label htmlFor={`loop_ping_count-${localConfig.id}`}>Ping回数:</label>
+                        <input type="number" id={`loop_ping_count-${localConfig.id}`} value={localConfig.loop_ping_count || ''}
+                               onChange={e => handleLocalChange('loop_ping_count', e.target.value === '' ? '' : Number(e.target.value))}
+                               min="1" disabled={isFormDisabled} />
+                    </div>
                     <p style={{fontSize: "0.8em", color: "#666", marginLeft: "155px"}}>指定した2ノード間でダミー宛先へのルートを相互に向け、時間制限付きでループを発生させます。解除は自動で行われます。</p>
                 </>
             )}
         </div>
     );
 });
-// --- FaultConfigBlockコンポーネント定義終わり ---
-
 
 const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
   const getInitialState = <T,>(keySuffix: string, defaultValue: T): T => {
@@ -255,7 +265,6 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
           target_node: newTargetNode,
           target_link: updateOrDefaultLink(fc.target_link),
           target_interface: newTargetInterface,
-          // ループ用ノードも初期化
           loop_node1: fc.loop_node1 || (fetchedContainers.length > 0 ? fetchedContainers[0] : ''),
           loop_node2: fc.loop_node2 || (fetchedContainers.length > 1 ? fetchedContainers[1] : (fetchedContainers.length > 0 ? fetchedContainers[0] : '')),
         };
@@ -266,7 +275,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
       sessionStorage.removeItem(`${TOPOLOGY_SESSION_KEY_PREFIX}links`);
       sessionStorage.removeItem(`${TOPOLOGY_SESSION_KEY_PREFIX}interfacesByContainer`);
     }
-  }, []); // 依存配列は空
+  }, []);
 
   const fetchTopology = useCallback(async () => {
     setIsLoadingTopology(true); setMessage({ text: '', type: '' });
@@ -297,7 +306,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
                     target_node: newTargetNode,
                     target_link: updateOrDefaultLink(''),
                     target_interface: newTargetInterface,
-                    loop_node1: newTargetNode, // ループ用も初期化
+                    loop_node1: newTargetNode, 
                     loop_node2: containers.length > 1 ? containers[1] : (containers.length > 0 ? containers[0] : ''),
                 }];
             }
@@ -363,11 +372,10 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
       prevConfigs.map(fc => {
         if (fc.id === id) {
           const updatedFc = { ...fc, [field]: value };
-          if (field === 'target_node' && fc.fault_type !== 'routing_loop_timed') { // ループノード以外の場合
+          if (field === 'target_node' && fc.fault_type !== 'routing_loop_timed') { 
             const newNodeInterfaces = interfacesByContainer[value as string] || [];
             updatedFc.target_interface = newNodeInterfaces.length > 0 ? newNodeInterfaces[0] : '';
           }
-          // loop_node1, loop_node2 の変更時は target_interface には影響しない
           return updatedFc;
         }
         return fc;
@@ -383,7 +391,6 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
     setIsInjecting(true); setMessage({ text: '', type: '' }); setDetailedResults([]);
     const payloadsToSubmit = faultConfigs.map(fc => {
       const singlePayload: any = { fault_type: fc.fault_type };
-      // 共通的なパラメータ
       if (fc.target_node) singlePayload.target_node = fc.target_node;
       if (fc.target_interface) singlePayload.target_interface = fc.target_interface;
 
@@ -402,6 +409,8 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         singlePayload.loop_node2 = fc.loop_node2;
         singlePayload.loop_dummy_dest_ip = fc.loop_dummy_dest_ip;
         singlePayload.loop_duration_sec = Number(fc.loop_duration_sec);
+        if (fc.loop_ping_target_ip) singlePayload.loop_ping_target_ip = fc.loop_ping_target_ip;
+        if (fc.loop_ping_count) singlePayload.loop_ping_count = Number(fc.loop_ping_count);
       }
       return singlePayload;
     });
