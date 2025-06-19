@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, memo } from 'react';
 import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 
+// --- インターフェース定義 (変更なし) ---
 interface MessageState {
   text: string;
   type: 'success' | 'error' | 'info' | 'warning' | '';
@@ -35,6 +36,11 @@ interface FaultConfig {
   bandwidth_rate_kbit: string | number;
   bandwidth_burst_bytes: string | number;
   bandwidth_latency_ms: string | number;
+  // L3ループ関連のパラメータ (前回の要件で追加されたもの)
+  loop_node1: string;
+  loop_node2: string;
+  loop_dummy_dest_ip: string;
+  loop_duration_sec: string | number;
 }
 
 const DEFAULT_FAULT_CONFIG: Omit<FaultConfig, 'id'> = {
@@ -48,57 +54,190 @@ const DEFAULT_FAULT_CONFIG: Omit<FaultConfig, 'id'> = {
     bandwidth_rate_kbit: 1000,
     bandwidth_burst_bytes: '',
     bandwidth_latency_ms: '50ms',
+    loop_node1: '', // L3ループ用デフォルト
+    loop_node2: '',
+    loop_dummy_dest_ip: '192.168.7.2/32',
+    loop_duration_sec: 5,
 };
 
-// --- 追加: sessionStorageのキー ---
-const TOPOLOGY_SESSION_KEY = 'topologyData';
-// --- 追加終わり ---
+const TOPOLOGY_SESSION_KEY_PREFIX = 'injectPage_topology_';
+// --- インターフェース定義終わり ---
+
+// --- 変更: FaultConfigBlock を InjectPage コンポーネントの外で定義 ---
+interface FaultConfigBlockProps {
+    // config prop は初期値としてのみ使用し、変更は onConfigChange で通知する
+    initialConfig: FaultConfig; // 初期設定値
+    onConfigChange: (id: string, field: keyof Omit<FaultConfig, 'id'>, value: any) => void; // 親への通知用
+    onRemoveConfig: (id: string) => void;
+    allContainers: string[];
+    allLinks: string[][];
+    interfacesByNode: Record<string, string[]>;
+    isFormDisabled: boolean;
+}
+
+const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
+    initialConfig, onConfigChange, onRemoveConfig, allContainers, allLinks, interfacesByNode, isFormDisabled
+}) => {
+    const [localConfig, setLocalConfig] = useState<FaultConfig>(initialConfig);
+    const [nodeInterfaces, setNodeInterfaces] = useState<string[]>([]);
+
+    useEffect(() => {
+        setLocalConfig(initialConfig); // 親から渡される初期値が変更された場合にローカルも追従
+    }, [initialConfig]);
+
+    useEffect(() => {
+        const interfaces = interfacesByNode[localConfig.target_node] || [];
+        setNodeInterfaces(interfaces);
+    }, [localConfig.target_node, interfacesByNode]);
+
+    const handleLocalChange = (field: keyof Omit<FaultConfig, 'id'>, value: any) => {
+        const newConfigPart = { [field]: value };
+        let newTargetInterface = localConfig.target_interface;
+
+        if (field === 'target_node') {
+            const newNodeInterfaces = interfacesByNode[value as string] || [];
+            newTargetInterface = newNodeInterfaces.length > 0 ? newNodeInterfaces[0] : '';
+            // target_node 変更時は target_interface も更新して親に通知
+            setLocalConfig(prev => ({ ...prev, ...newConfigPart, target_interface: newTargetInterface }));
+            onConfigChange(localConfig.id, field, value);
+            onConfigChange(localConfig.id, 'target_interface', newTargetInterface); // IFも通知
+        } else {
+            setLocalConfig(prev => ({ ...prev, ...newConfigPart }));
+            onConfigChange(localConfig.id, field, value);
+        }
+    };
+
+    const showLinkTargetFields = localConfig.fault_type === 'link_down' || localConfig.fault_type === 'link_up';
+    const showNodeSelector = 
+        localConfig.fault_type.includes('node_') ||
+        localConfig.fault_type.startsWith('tc_') || 
+        localConfig.fault_type === 'add_latency' || 
+        localConfig.fault_type === 'limit_bandwidth' ||
+        localConfig.fault_type === 'routing_loop_timed' ||
+        showLinkTargetFields;
+
+    const showInterfaceSelector = localConfig.fault_type === 'add_latency' || localConfig.fault_type === 'limit_bandwidth' || localConfig.fault_type === 'tc_clear' || showLinkTargetFields;
+    const showLatencyParams = localConfig.fault_type === 'add_latency';
+    const showBandwidthParams = localConfig.fault_type === 'limit_bandwidth';
+    const showRoutingLoopTimedParams = localConfig.fault_type === 'routing_loop_timed';
+
+    return (
+        <div style={{ border: '1px dashed #ccc', padding: '15px', marginBottom: '15px', borderRadius: '5px' }}>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                <h4>障害設定 #{localConfig.id.substring(0, 6)}...</h4>
+                <button type="button" onClick={() => onRemoveConfig(localConfig.id)} disabled={isFormDisabled} style={{backgroundColor: '#ff4d4f', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '3px', cursor: 'pointer'}}>削除</button>
+            </div>
+            <div>
+                <label htmlFor={`fault_type-${localConfig.id}`}>障害パターン:</label>
+                <select id={`fault_type-${localConfig.id}`} name="fault_type" value={localConfig.fault_type} 
+                        onChange={e => handleLocalChange('fault_type', e.target.value)}
+                        disabled={isFormDisabled}>
+                    <option value="link_down">Link Down</option>
+                    <option value="link_up">Link Up</option>
+                    <option value="node_stop">Node Stop</option>
+                    <option value="node_start">Node Start</option>
+                    <option value="node_pause">Node Pause</option>
+                    <option value="node_unpause">Node Unpause</option>
+                    <option value="add_latency">Add Latency (tc netem)</option>
+                    <option value="limit_bandwidth">Limit Bandwidth (tc tbf)</option>
+                    <option value="tc_clear">Clear TC Rules (on interface)</option>
+                    <option value="routing_loop_timed">Timed Routing Loop (L3)</option>
+                </select>
+            </div>
+
+            {showNodeSelector && (
+                <div>
+                    <label htmlFor={`target_node-${localConfig.id}`}>ターゲットノード:</label>
+                    <select id={`target_node-${localConfig.id}`} value={localConfig.target_node}
+                            onChange={e => handleLocalChange('target_node', e.target.value)}
+                            disabled={isFormDisabled || allContainers.length === 0}>
+                        {allContainers.length === 0 && <option value="">コンテナなし</option>}
+                        {allContainers.map(c => <option key={`${localConfig.id}-node-${c}`} value={c}>{c}</option>)}
+                    </select>
+                </div>
+            )}
+            {showInterfaceSelector && (
+                <div>
+                    <label htmlFor={`target_interface-${localConfig.id}`}>ターゲットインターフェース:</label>
+                    <select id={`target_interface-${localConfig.id}`} value={localConfig.target_interface}
+                            onChange={e => handleLocalChange('target_interface', e.target.value)}
+                            disabled={isFormDisabled || nodeInterfaces.length === 0}>
+                        {nodeInterfaces.length === 0 && <option value="">-- IFなし --</option>}
+                        {nodeInterfaces.map(ifName => <option key={`${localConfig.id}-if-${ifName}`} value={ifName}>{ifName}</option>)}
+                    </select>
+                </div>
+            )}
+            {showLinkTargetFields && (
+                <div>
+                    <label htmlFor={`target_link-${localConfig.id}`}>ターゲットリンク:</label>
+                    <select id={`target_link-${localConfig.id}`} value={localConfig.target_link}
+                            onChange={e => handleLocalChange('target_link', e.target.value)}
+                            disabled={isFormDisabled || allLinks.length === 0}>
+                        {allLinks.length === 0 && <option value="">リンクなし</option>}
+                        {allLinks.map(l => <option key={`${localConfig.id}-link-${l[0]}|${l[1]}`} value={`${l[0]}|${l[1]}`}>{`${l[0]}<-->${l[1]}`}</option>)}
+                    </select>
+                </div>
+            )}
+
+            {showLatencyParams && (
+                <>
+                    <div><label htmlFor={`latency_ms-${localConfig.id}`}>遅延 (ms):</label><input type="number" id={`latency_ms-${localConfig.id}`} value={localConfig.latency_ms} onChange={e => handleLocalChange('latency_ms', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
+                    <div><label htmlFor={`jitter_ms-${localConfig.id}`}>ジッター (ms, 任意):</label><input type="number" id={`jitter_ms-${localConfig.id}`} value={localConfig.jitter_ms} onChange={e => handleLocalChange('jitter_ms', e.target.value === '' ? '' : Number(e.target.value))} min="0" disabled={isFormDisabled} /></div>
+                    <div><label htmlFor={`correlation_percent-${localConfig.id}`}>相関 (%, 任意):</label><input type="number" id={`correlation_percent-${localConfig.id}`} value={localConfig.correlation_percent} onChange={e => handleLocalChange('correlation_percent', e.target.value === '' ? '' : Number(e.target.value))} min="0" max="100" disabled={isFormDisabled} /></div>
+                </>
+            )}
+            {showBandwidthParams && (
+                 <>
+                    <div><label htmlFor={`bandwidth_rate_kbit-${localConfig.id}`}>レート (kbit/s):</label><input type="number" id={`bandwidth_rate_kbit-${localConfig.id}`} value={localConfig.bandwidth_rate_kbit} onChange={e => handleLocalChange('bandwidth_rate_kbit', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
+                    <div><label htmlFor={`bandwidth_burst_bytes-${localConfig.id}`}>バースト (bytes, 任意):</label><p>(短期間のトラフィック急増の最大許容値)</p><input type="text" id={`bandwidth_burst_bytes-${localConfig.id}`} value={localConfig.bandwidth_burst_bytes} onChange={e => handleLocalChange('bandwidth_burst_bytes', e.target.value)} placeholder="e.g., 32000 or 32kb" disabled={isFormDisabled} /></div>
+                    <div><label htmlFor={`bandwidth_latency_ms-${localConfig.id}`}>TBFレイテンシ (ms, 任意):</label><p>(指定した時間内に送信できないトラフィックはドロップ)</p><input type="text" id={`bandwidth_latency_ms-${localConfig.id}`} value={localConfig.bandwidth_latency_ms} onChange={e => handleLocalChange('bandwidth_latency_ms', e.target.value)} placeholder="e.g., 50ms" disabled={isFormDisabled} /></div>
+                </>
+            )}
+            {showRoutingLoopTimedParams && (
+                <>
+                    <div><label htmlFor={`loop_node1-${localConfig.id}`}>ループノード1:</label><select id={`loop_node1-${localConfig.id}`} value={localConfig.loop_node1} onChange={e => handleLocalChange('loop_node1', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{allContainers.map(c => <option key={`${localConfig.id}-ln1-${c}`} value={c}>{c}</option>)}</select></div>
+                    <div><label htmlFor={`loop_node2-${localConfig.id}`}>ループノード2:</label><select id={`loop_node2-${localConfig.id}`} value={localConfig.loop_node2} onChange={e => handleLocalChange('loop_node2', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{allContainers.map(c => <option key={`${localConfig.id}-ln2-${c}`} value={c}>{c}</option>)}</select></div>
+                    <div><label htmlFor={`loop_dummy_dest_ip-${localConfig.id}`}>ダミー宛先IP (CIDR):</label><input type="text" id={`loop_dummy_dest_ip-${localConfig.id}`} value={localConfig.loop_dummy_dest_ip} onChange={e => handleLocalChange('loop_dummy_dest_ip', e.target.value)} placeholder="e.g., 192.168.7.2/32" disabled={isFormDisabled} /></div>
+                    <div><label htmlFor={`loop_duration_sec-${localConfig.id}`}>ループ持続時間 (秒):</label><input type="number" id={`loop_duration_sec-${localConfig.id}`} value={localConfig.loop_duration_sec} onChange={e => handleLocalChange('loop_duration_sec', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
+                    <p style={{fontSize: "0.8em", color: "#666", marginLeft: "155px"}}>指定した2ノード間でダミー宛先へのルートを相互に向け、時間制限付きでループを発生させます。解除は自動で行われます。</p>
+                </>
+            )}
+        </div>
+    );
+});
+// --- FaultConfigBlockコンポーネント定義終わり ---
 
 
 const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
-  // --- 変更: ステートの初期値を sessionStorage から取得する関数 ---
-  const getInitialState = <T,>(key: string, defaultValue: T): T => {
+  const getInitialState = <T,>(keySuffix: string, defaultValue: T): T => {
     try {
-      const storedValue = sessionStorage.getItem(key);
-      if (storedValue) {
-        return JSON.parse(storedValue) as T;
-      }
-    } catch (error) {
-      console.error(`Error reading sessionStorage key “${key}”:`, error);
-    }
+      const storedValue = sessionStorage.getItem(`${TOPOLOGY_SESSION_KEY_PREFIX}${keySuffix}`);
+      if (storedValue) { return JSON.parse(storedValue) as T; }
+    } catch (error) { console.error(`Error reading sessionStorage key “${TOPOLOGY_SESSION_KEY_PREFIX}${keySuffix}”:`, error); }
     return defaultValue;
   };
-  // --- 変更終わり ---
 
-  const [containers, setContainers] = useState<string[]>(() => getInitialState<string[]>(`${TOPOLOGY_SESSION_KEY}_containers`, []));
-  const [links, setLinks] = useState<string[][]>(() => getInitialState<string[][]>(`${TOPOLOGY_SESSION_KEY}_links`, []));
-  const [interfacesByContainer, setInterfacesByContainer] = useState<Record<string, string[]>>(() => getInitialState<Record<string, string[]>>(`${TOPOLOGY_SESSION_KEY}_interfaces`, {}));
+  const [containers, setContainers] = useState<string[]>(() => getInitialState<string[]>('containers', []));
+  const [links, setLinks] = useState<string[][]>(() => getInitialState<string[][]>('links', []));
+  const [interfacesByContainer, setInterfacesByContainer] = useState<Record<string, string[]>>(() => getInitialState<Record<string, string[]>>('interfacesByContainer', {}));
   
   const [isLoadingTopology, setIsLoadingTopology] = useState(false);
   const [isInjecting, setIsInjecting] = useState(false);
   const [message, setMessage] = useState<MessageState>({ text: '', type: '' });
   const [detailedResults, setDetailedResults] = useState<DetailedMessage[]>([]);
+  const [faultConfigs, setFaultConfigs] = useState<FaultConfig[]>([{ ...DEFAULT_FAULT_CONFIG, id: uuidv4() }]);
 
-  const [faultConfigs, setFaultConfigs] = useState<FaultConfig[]>(() => {
-    const storedConfigs = getInitialState<FaultConfig[] | null>(`${TOPOLOGY_SESSION_KEY}_faultConfigs`, null);
-    // faultConfigs は sessionStorage に保存しないか、または保存する場合はより複雑な初期化が必要
-    // ここでは、トポロジ情報に基づいて初期化されるため、sessionStorageからは読み込まない
-    return [{ ...DEFAULT_FAULT_CONFIG, id: uuidv4() }];
-  });
-
-  // --- 追加: トポロジ情報をステートにセットし、sessionStorageにも保存する関数 ---
-  const setAndStoreTopologyData = (data: TopologyData | null) => {
+  const setAndStoreTopologyData = useCallback((data: TopologyData | null) => {
     if (data) {
       const { containers: fetchedContainers, links: fetchedSimpleLinks, interfaces_by_container: fetchedInterfaces } = data;
       setContainers(fetchedContainers);
       setLinks(fetchedSimpleLinks);
       setInterfacesByContainer(fetchedInterfaces);
 
-      sessionStorage.setItem(`${TOPOLOGY_SESSION_KEY}_containers`, JSON.stringify(fetchedContainers));
-      sessionStorage.setItem(`${TOPOLOGY_SESSION_KEY}_links`, JSON.stringify(fetchedSimpleLinks));
-      sessionStorage.setItem(`${TOPOLOGY_SESSION_KEY}_interfaces`, JSON.stringify(fetchedInterfaces));
+      sessionStorage.setItem(`${TOPOLOGY_SESSION_KEY_PREFIX}containers`, JSON.stringify(fetchedContainers));
+      sessionStorage.setItem(`${TOPOLOGY_SESSION_KEY_PREFIX}links`, JSON.stringify(fetchedSimpleLinks));
+      sessionStorage.setItem(`${TOPOLOGY_SESSION_KEY_PREFIX}interfacesByContainer`, JSON.stringify(fetchedInterfaces));
 
-      // faultConfigs のデフォルト値を更新
       const updateOrDefaultNode = (currentNode: string) => currentNode || (fetchedContainers.length > 0 ? fetchedContainers[0] : '');
       const updateOrDefaultLink = (currentLink: string) => currentLink || (fetchedSimpleLinks.length > 0 ? `${fetchedSimpleLinks[0][0]}|${fetchedSimpleLinks[0][1]}` : '');
       
@@ -116,67 +255,77 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
           target_node: newTargetNode,
           target_link: updateOrDefaultLink(fc.target_link),
           target_interface: newTargetInterface,
+          // ループ用ノードも初期化
+          loop_node1: fc.loop_node1 || (fetchedContainers.length > 0 ? fetchedContainers[0] : ''),
+          loop_node2: fc.loop_node2 || (fetchedContainers.length > 1 ? fetchedContainers[1] : (fetchedContainers.length > 0 ? fetchedContainers[0] : '')),
         };
       }));
-
-
-    } else { // データがnull（エラーなど）の場合、クリア
-      setContainers([]);
-      setLinks([]);
-      setInterfacesByContainer({});
-      sessionStorage.removeItem(`${TOPOLOGY_SESSION_KEY}_containers`);
-      sessionStorage.removeItem(`${TOPOLOGY_SESSION_KEY}_links`);
-      sessionStorage.removeItem(`${TOPOLOGY_SESSION_KEY}_interfaces`);
+    } else { 
+      setContainers([]); setLinks([]); setInterfacesByContainer({});
+      sessionStorage.removeItem(`${TOPOLOGY_SESSION_KEY_PREFIX}containers`);
+      sessionStorage.removeItem(`${TOPOLOGY_SESSION_KEY_PREFIX}links`);
+      sessionStorage.removeItem(`${TOPOLOGY_SESSION_KEY_PREFIX}interfacesByContainer`);
     }
-  };
-
+  }, []); // 依存配列は空
 
   const fetchTopology = useCallback(async () => {
-    setIsLoadingTopology(true);
-    setMessage({ text: '', type: '' });
+    setIsLoadingTopology(true); setMessage({ text: '', type: '' });
     try {
       const response = await axios.get<TopologyData>(`${apiBaseUrl}/insert/topology`);
-      setAndStoreTopologyData(response.data); // --- setAndStoreTopologyData を使用 ---
+      setAndStoreTopologyData(response.data); 
       setMessage({ text: 'トポロジ情報を更新しました。', type: 'success' });
     } catch (error) {
       console.error("Error fetching topology:", error);
       setMessage({ text: 'トポロジ情報の取得に失敗しました。', type: 'error' });
-      setAndStoreTopologyData(null); // エラー時はクリア
-    } finally {
-      setIsLoadingTopology(false);
-    }
-  }, [apiBaseUrl]); // setAndStoreTopologyData は依存配列に不要
+      setAndStoreTopologyData(null);
+    } finally { setIsLoadingTopology(false); }
+  }, [apiBaseUrl, setAndStoreTopologyData]);
 
-  // --- 初回マウント時にsessionStorageにデータがなければ何もしない ---
-  // ボタンが押されたときにfetchTopologyが呼ばれる
   useEffect(() => {
-    // 初回ロード時に faultConfigs の target_node などが sessionStorage の containers に基づいて設定されるように
-    // faultConfigs の初期化ロジックを調整するか、ここで再設定する
-    if (containers.length > 0 || links.length > 0) {
+    if (containers.length > 0 || Object.keys(interfacesByContainer).length > 0 || links.length > 0) {
         const updateOrDefaultNode = (currentNode: string) => currentNode || (containers.length > 0 ? containers[0] : '');
-        const updateOrDefaultLink = (currentLink: string) => currentLink || (links.length > 0 ? `${links[0][0]}|${links[0][1]}` : '');
+        const updateOrDefaultLink = (currentLink: string) => currentLink || (links.length > 0 ? `${links[0][0]}|${links[0][1]}`: '');
       
-        setFaultConfigs(prevConfigs => prevConfigs.map(fc => {
-          const newTargetNode = updateOrDefaultNode(fc.target_node || (containers.length > 0 ? containers[0] : '')); // fc.target_nodeが空の場合も考慮
-          const newNodeInterfaces = interfacesByContainer[newTargetNode] || [];
-          let newTargetInterface = fc.target_interface;
-          if (newNodeInterfaces.length > 0 && (!newTargetInterface || !newNodeInterfaces.includes(newTargetInterface))) {
-              newTargetInterface = newNodeInterfaces[0];
-          } else if (newNodeInterfaces.length === 0) {
-              newTargetInterface = '';
-          }
-          return {
-            ...fc,
-            target_node: newTargetNode,
-            target_link: updateOrDefaultLink(fc.target_link || (links.length > 0 ? `${links[0][0]}|${links[0][1]}`: '')),
-            target_interface: newTargetInterface,
-          };
-        }));
+        setFaultConfigs(prevConfigs => {
+            if (prevConfigs.length === 1 && prevConfigs[0].target_node === '' && prevConfigs[0].target_link === '' && prevConfigs[0].target_interface === '') {
+                const newTargetNode = updateOrDefaultNode('');
+                const newNodeInterfaces = interfacesByContainer[newTargetNode] || [];
+                const newTargetInterface = newNodeInterfaces.length > 0 ? newNodeInterfaces[0] : '';
+                return [{
+                    ...DEFAULT_FAULT_CONFIG,
+                    id: prevConfigs[0].id,
+                    target_node: newTargetNode,
+                    target_link: updateOrDefaultLink(''),
+                    target_interface: newTargetInterface,
+                    loop_node1: newTargetNode, // ループ用も初期化
+                    loop_node2: containers.length > 1 ? containers[1] : (containers.length > 0 ? containers[0] : ''),
+                }];
+            }
+            return prevConfigs.map(fc => {
+                const newTargetNode = updateOrDefaultNode(fc.target_node);
+                const newNodeInterfaces = interfacesByContainer[newTargetNode] || [];
+                let newTargetInterface = fc.target_interface;
+                 if (newNodeInterfaces.length > 0 && (!newTargetInterface || !newNodeInterfaces.includes(newTargetInterface))) {
+                    newTargetInterface = newNodeInterfaces[0];
+                } else if (newNodeInterfaces.length === 0 && newTargetInterface !== '') {
+                    newTargetInterface = '';
+                }
+                return {
+                    ...fc,
+                    target_node: newTargetNode,
+                    target_link: updateOrDefaultLink(fc.target_link),
+                    target_interface: newTargetInterface,
+                    loop_node1: fc.loop_node1 || newTargetNode,
+                    loop_node2: fc.loop_node2 || (containers.length > 1 ? containers[1] : (containers.length > 0 ? containers[0] : '')),
+                };
+            });
+        });
     }
-  }, [containers, links, interfacesByContainer]); // トポロジデータが変わったらfaultConfigsを調整
+  }, [containers, links, interfacesByContainer]);
 
   const handleAddFaultConfig = () => {
     const firstContainer = containers.length > 0 ? containers[0] : '';
+    const secondContainer = containers.length > 1 ? containers[1] : (containers.length > 0 ? containers[0] : '');
     const firstLink = links.length > 0 ? `${links[0][0]}|${links[0][1]}` : '';
     const firstNodeInterfaces = interfacesByContainer[firstContainer] || [];
     const firstInterface = firstNodeInterfaces.length > 0 ? firstNodeInterfaces[0] : '';
@@ -188,37 +337,56 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         target_node: firstContainer,
         target_link: firstLink,
         target_interface: firstInterface,
+        loop_node1: firstContainer,
+        loop_node2: secondContainer,
       }
     ]);
   };
 
   const handleRemoveFaultConfig = (idToRemove: string) => {
-    setFaultConfigs(prevConfigs => prevConfigs.filter(fc => fc.id !== idToRemove));
+    setFaultConfigs(prevConfigs => {
+        const newConfigs = prevConfigs.filter(fc => fc.id !== idToRemove);
+        if (newConfigs.length === 0) {
+            const firstContainer = containers.length > 0 ? containers[0] : '';
+            const secondContainer = containers.length > 1 ? containers[1] : (containers.length > 0 ? containers[0] : '');
+            const firstLink = links.length > 0 ? `${links[0][0]}|${links[0][1]}` : '';
+            const firstNodeInterfaces = interfacesByContainer[firstContainer] || [];
+            const firstInterface = firstNodeInterfaces.length > 0 ? firstNodeInterfaces[0] : '';
+            return [{ ...DEFAULT_FAULT_CONFIG, id: uuidv4(), target_node: firstContainer, target_link: firstLink, target_interface: firstInterface, loop_node1: firstContainer, loop_node2: secondContainer }];
+        }
+        return newConfigs;
+    });
   };
 
-  const handleFaultConfigChange = (id: string, field: keyof Omit<FaultConfig, 'id'>, value: any) => {
+  const handleFaultConfigChange = useCallback((id: string, field: keyof Omit<FaultConfig, 'id'>, value: any) => {
     setFaultConfigs(prevConfigs =>
-      prevConfigs.map(fc =>
-        fc.id === id ? { ...fc, [field]: value } : fc
-      )
+      prevConfigs.map(fc => {
+        if (fc.id === id) {
+          const updatedFc = { ...fc, [field]: value };
+          if (field === 'target_node' && fc.fault_type !== 'routing_loop_timed') { // ループノード以外の場合
+            const newNodeInterfaces = interfacesByContainer[value as string] || [];
+            updatedFc.target_interface = newNodeInterfaces.length > 0 ? newNodeInterfaces[0] : '';
+          }
+          // loop_node1, loop_node2 の変更時は target_interface には影響しない
+          return updatedFc;
+        }
+        return fc;
+      })
     );
-  };
+  }, [interfacesByContainer]);
 
   const handleSubmitAllFaults = async () => {
     if (faultConfigs.length === 0) {
         setMessage({text: "生成する障害が設定されていません。", type: "warning"});
         return;
     }
-    setIsInjecting(true);
-    setMessage({ text: '', type: '' });
-    setDetailedResults([]);
-
+    setIsInjecting(true); setMessage({ text: '', type: '' }); setDetailedResults([]);
     const payloadsToSubmit = faultConfigs.map(fc => {
-      const singlePayload: any = {
-        fault_type: fc.fault_type,
-        target_node: fc.target_node,
-        target_interface: fc.target_interface,
-      };
+      const singlePayload: any = { fault_type: fc.fault_type };
+      // 共通的なパラメータ
+      if (fc.target_node) singlePayload.target_node = fc.target_node;
+      if (fc.target_interface) singlePayload.target_interface = fc.target_interface;
+
       if (fc.fault_type.includes('link_')) {
         singlePayload.target_link = fc.target_link;
       } else if (fc.fault_type === 'add_latency') {
@@ -229,6 +397,11 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         singlePayload.bandwidth_rate_kbit = Number(fc.bandwidth_rate_kbit);
         if (fc.bandwidth_burst_bytes) singlePayload.bandwidth_burst_bytes = String(fc.bandwidth_burst_bytes);
         if (fc.bandwidth_latency_ms) singlePayload.bandwidth_latency_ms = String(fc.bandwidth_latency_ms);
+      } else if (fc.fault_type === 'routing_loop_timed') {
+        singlePayload.loop_node1 = fc.loop_node1;
+        singlePayload.loop_node2 = fc.loop_node2;
+        singlePayload.loop_dummy_dest_ip = fc.loop_dummy_dest_ip;
+        singlePayload.loop_duration_sec = Number(fc.loop_duration_sec);
       }
       return singlePayload;
     });
@@ -245,140 +418,15 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
     } catch (error: any) {
       console.error("Error injecting faults:", error);
       setMessage({ text: 'Failed to inject faults. ' + (error.response?.data?.message || error.message) , type: 'error' });
-    } finally {
-      setIsInjecting(false);
-    }
+    } finally { setIsInjecting(false); }
   };
 
-  // トポロジデータがまだロードされていない場合（sessionStorageにもなく、ボタンも押されていない）
-  const noTopologyDataLoaded = containers.length === 0 && links.length === 0 && !isLoadingTopology;
-
-  interface FaultConfigBlockProps {
-    config: FaultConfig;
-    onConfigChange: (id: string, field: keyof Omit<FaultConfig, 'id'>, value: any) => void;
-    onRemoveConfig: (id: string) => void;
-    allContainers: string[];
-    allLinks: string[][];
-    interfacesByNode: Record<string, string[]>;
-    isFormDisabled: boolean;
-  }
-
-  const FaultConfigBlock: React.FC<FaultConfigBlockProps> = ({
-    config, onConfigChange, onRemoveConfig, allContainers, allLinks, interfacesByNode, isFormDisabled
-  }) => {
-    const [nodeInterfaces, setNodeInterfaces] = useState<string[]>([]);
-
-    useEffect(() => {
-        const interfaces = interfacesByNode[config.target_node] || [];
-        setNodeInterfaces(interfaces);
-        // ターゲットノードが変わり、かつ現在のインターフェースが新しいリストにない場合、
-        // またはインターフェースが未選択で新しいリストにIFがある場合、インターフェースを更新
-        if (interfaces.length > 0 && (!config.target_interface || !interfaces.includes(config.target_interface))) {
-            onConfigChange(config.id, 'target_interface', interfaces[0]);
-        } else if (interfaces.length === 0 && config.target_interface !== '') {
-            onConfigChange(config.id, 'target_interface', '');
-        }
-    }, [config.target_node, interfacesByNode, config.id, onConfigChange, config.target_interface]);
-
-
-    const showLinkTargetFields = config.fault_type === 'link_down' || config.fault_type === 'link_up';
-    const showNodeSelectorForTcOrNodeOp = !showLinkTargetFields || config.fault_type === 'link_down' || config.fault_type === 'link_up';
-    const showInterfaceSelector = config.fault_type === 'add_latency' || config.fault_type === 'limit_bandwidth' || config.fault_type === 'tc_clear' || showLinkTargetFields;
-    const showLatencyParams = config.fault_type === 'add_latency';
-    const showBandwidthParams = config.fault_type === 'limit_bandwidth';
-
-    return (
-        <div style={{ border: '1px dashed #ccc', padding: '15px', marginBottom: '15px', borderRadius: '5px' }}>
-            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                <h4>障害設定 #{config.id.substring(0, 6)}...</h4>
-                <button type="button" onClick={() => onRemoveConfig(config.id)} disabled={isFormDisabled} style={{backgroundColor: '#ff4d4f', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '3px', cursor: 'pointer'}}>削除</button>
-            </div>
-            <div>
-                <label htmlFor={`fault_type-${config.id}`}>障害パターン:</label>
-                <select id={`fault_type-${config.id}`} name="fault_type" value={config.fault_type} 
-                        onChange={e => onConfigChange(config.id, 'fault_type', e.target.value)}
-                        disabled={isFormDisabled}>
-                    <option value="link_down">Link Down</option>
-                    <option value="link_up">Link Up</option>
-                    <option value="node_stop">Node Stop</option>
-                    <option value="node_start">Node Start</option>
-                    <option value="node_pause">Node Pause</option>
-                    <option value="node_unpause">Node Unpause</option>
-                    <option value="add_latency">Add Latency (tc netem)</option>
-                    <option value="limit_bandwidth">Limit Bandwidth (tc tbf)</option>
-                    <option value="tc_clear">Clear TC Rules (on interface)</option>
-                </select>
-            </div>
-
-            {showNodeSelectorForTcOrNodeOp && (
-                <div>
-                    <label htmlFor={`target_node-${config.id}`}>ターゲットノード:</label>
-                    <select id={`target_node-${config.id}`} value={config.target_node}
-                            onChange={e => onConfigChange(config.id, 'target_node', e.target.value)}
-                            disabled={isFormDisabled || allContainers.length === 0}>
-                        {allContainers.length === 0 && <option value="">コンテナなし</option>}
-                        {allContainers.map(c => <option key={`${config.id}-node-${c}`} value={c}>{c}</option>)}
-                    </select>
-                </div>
-            )}
-
-            {showInterfaceSelector && (
-                <div>
-                    <label htmlFor={`target_interface-${config.id}`}>ターゲットインターフェース:</label>
-                    <select id={`target_interface-${config.id}`} value={config.target_interface}
-                            onChange={e => onConfigChange(config.id, 'target_interface', e.target.value)}
-                            disabled={isFormDisabled || nodeInterfaces.length === 0}>
-                        {nodeInterfaces.length === 0 && <option value="">-- IFなし --</option>}
-                        {nodeInterfaces.map(ifName => <option key={`${config.id}-if-${ifName}`} value={ifName}>{ifName}</option>)}
-                    </select>
-                </div>
-            )}
-
-            {showLinkTargetFields && (
-                <div>
-                    <label htmlFor={`target_link-${config.id}`}>ターゲットリンク:</label>
-                    <select id={`target_link-${config.id}`} value={config.target_link}
-                            onChange={e => onConfigChange(config.id, 'target_link', e.target.value)}
-                            disabled={isFormDisabled || allLinks.length === 0}>
-                        {allLinks.length === 0 && <option value="">リンクなし</option>}
-                        {allLinks.map(l => <option key={`${config.id}-link-${l[0]}|${l[1]}`} value={`${l[0]}|${l[1]}`}>{`${l[0]}<-->${l[1]}`}</option>)}
-                    </select>
-                </div>
-            )}
-
-            {showLatencyParams && (
-                <>
-                    <div><label htmlFor={`latency_ms-${config.id}`}>遅延 (ms):</label><input type="number" id={`latency_ms-${config.id}`} value={config.latency_ms} onChange={e => onConfigChange(config.id, 'latency_ms', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
-                    <div><label htmlFor={`jitter_ms-${config.id}`}>ジッター (ms, 任意):</label><input type="number" id={`jitter_ms-${config.id}`} value={config.jitter_ms} onChange={e => onConfigChange(config.id, 'jitter_ms', e.target.value === '' ? '' : Number(e.target.value))} min="0" disabled={isFormDisabled} /></div>
-                    <div><label htmlFor={`correlation_percent-${config.id}`}>相関 (%, 任意):</label><input type="number" id={`correlation_percent-${config.id}`} value={config.correlation_percent} onChange={e => onConfigChange(config.id, 'correlation_percent', e.target.value === '' ? '' : Number(e.target.value))} min="0" max="100" disabled={isFormDisabled} /></div>
-                </>
-            )}
-            {showBandwidthParams && (
-                 <>
-                    <div>
-                      <label htmlFor={`bandwidth_rate_kbit-${config.id}`}>レート (kbit/s):</label><input type="number" id={`bandwidth_rate_kbit-${config.id}`} value={config.bandwidth_rate_kbit} onChange={e => onConfigChange(config.id, 'bandwidth_rate_kbit', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
-                    <div>
-                      <label htmlFor={`bandwidth_burst_bytes-${config.id}`}>バースト (bytes, 任意):</label><input type="text" id={`bandwidth_burst_bytes-${config.id}`} value={config.bandwidth_burst_bytes} onChange={e => onConfigChange(config.id, 'bandwidth_burst_bytes', e.target.value)} placeholder="e.g., 32000 or 32kb" disabled={isFormDisabled} />
-                      <label>(短期間のトラフィック急増の最大許容値)</label>
-                    </div>
-                    <div>
-                      <label htmlFor={`bandwidth_latency_ms-${config.id}`}>TBFレイテンシ (ms, 任意):</label><input type="text" id={`bandwidth_latency_ms-${config.id}`} value={config.bandwidth_latency_ms} onChange={e => onConfigChange(config.id, 'bandwidth_latency_ms', e.target.value)} placeholder="e.g., 50ms" disabled={isFormDisabled} />
-                      <label>(指定した時間内に送信できないトラフィックはドロップ)</label>
-                    </div>
-                </>
-            )}
-        </div>
-    );
-  };
+  const noTopologyDataLoaded = containers.length === 0 && Object.keys(interfacesByContainer).length === 0 && !isLoadingTopology;
 
   return (
     <div>
       <h1>障害生成画面</h1>
-      {message.text && (
-        <div className={`message ${message.type || 'info'}`}>
-          {message.text}
-        </div>
-      )}
+      {message.text && ( <div className={`message ${message.type || 'info'}`}>{message.text}</div> )}
       {detailedResults.length > 0 && (
         <div className="detailed-results-section" style={{marginTop: '15px', padding: '10px', border: '1px solid #eee', backgroundColor: '#f9f9f9'}}>
             <h3>生成結果詳細:</h3>
@@ -398,11 +446,11 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
       </div>
 
       <h2>検出したトポロジ</h2>
-      <div style={{display: 'flex'}}>
-        <div style={{marginRight: '100px'}}>
+      <div style={{display: 'flex', flexWrap: 'wrap'}}>
+        <div style={{marginRight: '30px', marginBottom: '20px'}}>
           <h3>コンテナ一覧:</h3>
           {containers.length > 0 ? (
-            containers.map(container => <div className="container" key={container}>{container}</div>)
+            containers.map(container => <div className="container" key={container} style={{padding:'2px 0'}}>{container}</div>)
           ) : (
             <p>コンテナが検出されていません。上記ボタンでトポロジ情報を取得してください。</p>
           )}
@@ -410,7 +458,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         <div>
           <h3>仮想リンク一覧 (推定):</h3>
           {links.length > 0 ? (
-            links.map(link => <div className="link" key={`${link[0]}-${link[1]}`}>{`${link[0]} <--> ${link[1]}`}</div>)
+            links.map(link => <div className="link" key={`${link[0]}-${link[1]}`} style={{padding:'2px 0'}}>{`${link[0]} <--> ${link[1]}`}</div>)
           ) : (
             <p>コンテナ間のリンクが検出されません。</p>
           )}
@@ -422,7 +470,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         {faultConfigs.map((fc) => (
           <FaultConfigBlock
             key={fc.id}
-            config={fc}
+            initialConfig={fc}
             onConfigChange={handleFaultConfigChange}
             onRemoveConfig={handleRemoveFaultConfig}
             allContainers={containers}
