@@ -6,10 +6,12 @@ import json
 import re
 import os
 import ipaddress
-import requests # --- 追加: measure.pyのAPIを叩くために必要 ---
+import requests
 
+"""
+コマンドを実行し、標準出力を返す関数.
+"""
 def run_command(command_list, timeout=10):
-    """コマンドを実行し、標準出力を返す"""
     try:
         #print(f"Executing command: {' '.join(command_list)}")
         result = subprocess.run(command_list, capture_output=True, text=True, check=True, timeout=timeout)
@@ -32,8 +34,10 @@ def run_command(command_list, timeout=10):
         print(f"An unexpected error occurred: {e}")
         return None, str(e)
 
+"""
+Containerlabで管理されていると思われるコンテナ名一覧を取得する関数.
+"""
 def get_clab_containers():
-    """Containerlabで管理されていると思われるコンテナ名一覧を取得"""
     stdout, stderr = run_command(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=clab-"])
     if stdout:
         containers = stdout.splitlines()
@@ -48,6 +52,10 @@ def get_clab_containers():
         print("No clab containers found.")
     return []
 
+
+"""
+get_clab_containers()で得たコンテナ一覧から, インターフェースのアドレス情報を取得する関数.
+"""
 def get_container_interface_details(container_name):
     cmd = ["docker", "exec", container_name, "ip", "-j", "addr"]
     stdout, stderr = run_command(cmd)
@@ -57,6 +65,7 @@ def get_container_interface_details(container_name):
             data = json.loads(stdout)
             for iface_data in data:
                 if iface_data.get("link_type") == "loopback" or not iface_data.get("operstate") == "UP":
+                    # ループバックであるか, statusがDOWNであれば含めない
                     continue
                 if_name = iface_data.get("ifname")
                 mac_address = iface_data.get("address")
@@ -81,6 +90,9 @@ def get_container_interface_details(container_name):
         print(f"No output from 'ip addr' for {container_name}, and no explicit error captured.")
     return interfaces
 
+"""
+get_container_interface_details()で得たインターフェース情報を, ネットワークに基づいてをマッピングする関数.
+"""
 def get_links_from_networks(containers):
     all_interfaces_details = {}
     for container_name in containers:
@@ -110,7 +122,10 @@ def get_links_from_networks(containers):
     #print(f"Detected links (IP subnet based): {link_list}")
     return link_list
 
-# --- API Routes ---
+
+"""
+以下, Flask API
+"""
 @app.route('/api/insert/topology', methods=['GET'])
 def get_topology():
     containers = get_clab_containers()

@@ -15,7 +15,7 @@ CLIENT_CONTAINER_NAME = "clab-ospf-pc1"
 SERVER_CONTAINER_NAME = "clab-ospf-pc2"
 SERVER_IP = "192.168.12.10"
 MEASUREMENT_INTERVAL_SEC = 1
-PING_COUNT = 10 # デフォルトのPING_COUNTを少し増やす
+PING_COUNT = 10
 IPERF_DURATION_SEC = 1
 OUTPUT_CSV_FILE = "../../result.csv"
 # --- 設定項目終わり ---
@@ -24,10 +24,14 @@ OUTPUT_CSV_FILE = "../../result.csv"
 loop_thread = None
 stop_event = threading.Event()
 iperf_server_started_flag = False
-fault_injected_flag = False # デフォルトはFalse
+fault_injected_flag = False 
 fault_flag_lock = threading.Lock() # フラグ操作の排他制御用ロック
 
 
+"""
+docker execコマンドを実行するための関数.
+dockerコンテナ名と実行するコマンドリストを受け取り, 任意のオプションを加えて実行する.
+"""
 def run_clab_command(container_name, command_list, task_name="Unnamed Task", timeout_override=None, check_return_code=True):
     cmd = ["docker", "exec", container_name] + command_list
     timeout_val = timeout_override if timeout_override is not None else 15
@@ -57,8 +61,11 @@ def run_clab_command(container_name, command_list, task_name="Unnamed Task", tim
         print(f"[{task_name}] An unexpected error: {e}")
         return None
 
+
+"""
+pingの標準出力を解析してRTT avgとロス率を抽出するための関数.
+"""
 def parse_ping_output(ping_output):
-    """pingの標準出力を解析してRTT avgとロス率を抽出"""
     rtt_avg_ms = None
     packet_loss_percent = None
 
@@ -77,8 +84,11 @@ def parse_ping_output(ping_output):
         packet_loss_percent = int(loss_match[0])
     return rtt_avg_ms, packet_loss_percent
 
+
+"""
+iperf3のJSON出力を解析してスループット(bps)等を抽出するための関数.
+"""
 def parse_iperf3_json_output(iperf_output):
-    """iperf3のJSON出力を解析してスループット(bps)等を抽出"""
     throughput_bps, jitter_ms, lost_packets, lost_percent = None, None, None, None
     if not iperf_output:
         return throughput_bps, jitter_ms, lost_packets, lost_percent
@@ -133,6 +143,9 @@ def write_log_csv(timestamp, source_container, target_container, rtt_avg_ms, pac
         print(f"An unexpected error occurred during CSV write: {e}")
 
 
+"""
+通信品質を一定間隔で測定するループ関数.
+"""
 def main_loop_process(stop_event_param):
     global iperf_server_started_flag, fault_injected_flag, fault_flag_lock
 
@@ -225,7 +238,10 @@ def main_loop_process(stop_event_param):
     
     print("Measurement loop stopping as requested...")
 
-# ---API---
+
+"""
+以下, FlaskのAPI
+"""
 def is_loop_running_check():
     global loop_thread
     return loop_thread is not None and loop_thread.is_alive()
@@ -343,7 +359,10 @@ def set_fault_flag_api():
     return jsonify({'status': 'success', 'message': f'Fault injected flag set to {fault_injected_flag}.', 'current_flag_state': fault_injected_flag})
 
 
-def parse_csv_value_for_json(value_str): # CSVの値をJSON用にパース
+"""
+CSVの値をJSON用にパースする関数.
+"""
+def parse_csv_value_for_json(value_str):
     if value_str is None or value_str == '': return None
     try:
         if '.' in value_str: return float(value_str)
