@@ -150,7 +150,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                             onChange={e => handleLocalChange('target_node', e.target.value)}
                             disabled={isFormDisabled || allContainers.length === 0}>
                         {allContainers.length === 0 && <option value="">コンテナなし</option>}
-                        {allContainers.map(c => <option key={`${localConfig.id}-node-${c}`} value={c}>{c}</option>)}
+                        {[...allContainers].sort().map(c => <option key={`${localConfig.id}-node-${c}`} value={c}>{c}</option>)}
                     </select>
                 </div>
             }
@@ -161,7 +161,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                             onChange={e => handleLocalChange('target_interface', e.target.value)}
                             disabled={isFormDisabled || nodeInterfaces.length === 0}>
                         {nodeInterfaces.length === 0 && <option value="">-- IFなし --</option>}
-                        {nodeInterfaces.map(ifName => <option key={`${localConfig.id}-if-${ifName}`} value={ifName}>{ifName}</option>)}
+                        {[...nodeInterfaces].sort().map(ifName => <option key={`${localConfig.id}-if-${ifName}`} value={ifName}>{ifName}</option>)}
                     </select>
                 </div>
             )}
@@ -195,8 +195,8 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
             )}
             {showRoutingLoopTimedParams && (
                 <>
-                    <div><label htmlFor={`loop_node1-${localConfig.id}`}>ループノード1:</label><select id={`loop_node1-${localConfig.id}`} value={localConfig.loop_node1} onChange={e => handleLocalChange('loop_node1', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{allContainers.map(c => <option key={`${localConfig.id}-ln1-${c}`} value={c}>{c}</option>)}</select></div>
-                    <div><label htmlFor={`loop_node2-${localConfig.id}`}>ループノード2:</label><select id={`loop_node2-${localConfig.id}`} value={localConfig.loop_node2} onChange={e => handleLocalChange('loop_node2', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{allContainers.map(c => <option key={`${localConfig.id}-ln2-${c}`} value={c}>{c}</option>)}</select></div>
+                    <div><label htmlFor={`loop_node1-${localConfig.id}`}>ループノード1:</label><select id={`loop_node1-${localConfig.id}`} value={localConfig.loop_node1} onChange={e => handleLocalChange('loop_node1', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{[...allContainers].sort().map(c => <option key={`${localConfig.id}-ln1-${c}`} value={c}>{c}</option>)}</select></div>
+                    <div><label htmlFor={`loop_node2-${localConfig.id}`}>ループノード2:</label><select id={`loop_node2-${localConfig.id}`} value={localConfig.loop_node2} onChange={e => handleLocalChange('loop_node2', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{[...allContainers].sort().map(c => <option key={`${localConfig.id}-ln2-${c}`} value={c}>{c}</option>)}</select></div>
                     <div><label htmlFor={`loop_dummy_dest_ip-${localConfig.id}`}>ダミー宛先IP (CIDR):</label><input type="text" id={`loop_dummy_dest_ip-${localConfig.id}`} value={localConfig.loop_dummy_dest_ip} onChange={e => handleLocalChange('loop_dummy_dest_ip', e.target.value)} placeholder="e.g., 10.255.255.255/32" disabled={isFormDisabled} /></div>
                     <div><label htmlFor={`loop_duration_sec-${localConfig.id}`}>ループ持続時間 (秒):</label><input type="number" id={`loop_duration_sec-${localConfig.id}`} value={localConfig.loop_duration_sec} onChange={e => handleLocalChange('loop_duration_sec', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
                     <hr style={{margin: "10px 0"}} />
@@ -461,7 +461,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         <div style={{marginRight: '30px', marginBottom: '20px'}}>
           <h3>コンテナ一覧:</h3>
           {containers.length > 0 ? (
-            containers.map(container => <div className="container" key={container} style={{padding:'2px 0'}}>{container}</div>)
+            [...containers].sort().map(container => <div className="container" key={container} style={{padding:'2px 0'}}>{container}</div>)
           ) : (
             <p>コンテナが検出されていません。上記ボタンでトポロジ情報を取得してください。</p>
           )}
@@ -469,7 +469,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         <div>
           <h3>仮想リンク一覧 (推定):</h3>
           {links.length > 0 ? (
-            links.map(link => <div className="link" key={`${link[0]}-${link[1]}`} style={{padding:'2px 0'}}>{`${link[0]} <--> ${link[1]}`}</div>)
+            [...links].sort().map(link => <div className="link" key={`${link[0]}-${link[1]}`} style={{padding:'2px 0'}}>{`${link[0]} <--> ${link[1]}`}</div>)
           ) : (
             <p>コンテナ間のリンクが検出されません。</p>
           )}
