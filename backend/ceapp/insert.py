@@ -173,7 +173,7 @@ def inject_fault_api():
         
         target_node = fault_data.get('target_node')
         target_interface = fault_data.get('target_interface')
-        target_link_str = fault_data.get('target_link')
+        target_link_str = "" #fault_data.get('target_link') #削除
         
         latency_ms = fault_data.get('latency_ms')
         jitter_ms = fault_data.get('jitter_ms')

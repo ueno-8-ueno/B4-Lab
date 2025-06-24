@@ -165,6 +165,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                     </select>
                 </div>
             )}
+            {/*
             {showLinkTargetFields && (
                 <div>
                     <label htmlFor={`target_link-${localConfig.id}`}>ターゲットリンク:</label>
@@ -176,6 +177,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                     </select>
                 </div>
             )}
+          */}
 
             {showLatencyParams && (
                 <>
