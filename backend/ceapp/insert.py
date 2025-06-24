@@ -204,13 +204,14 @@ def inject_fault_api():
 
         try:
             if fault_type == 'link_down' or fault_type == 'link_up':
-                if not target_link_str or not target_interface:
+                if not target_interface:
                     current_message = 'Target link and interface must be selected/entered for link operations.'
                     results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_link_str or 'N/A'})
                     continue 
                 
-                node_to_act_on = target_node or target_link_str.split('|')[0]
-                target_display = f"{fault_type} on link {target_link_str.replace('|','-')} interface {target_interface} of node {node_to_act_on}"
+                node_to_act_on = target_node #or target_link_str.split('|')[0]
+                target_display = f"{fault_type} on interface {target_interface} of node {node_to_act_on}"
+                #target_display = f"{fault_type} on link {target_link_str.replace('|','-')} interface {target_interface} of node {node_to_act_on}"
                 action = "down" if fault_type == 'link_down' else "up"
                 command_list_node1 = ["docker", "exec", node_to_act_on, "ip", "link", "set", target_interface, action]
 
