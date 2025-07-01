@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -11,8 +10,10 @@ import {
   Tooltip,
   Legend,
 } from 'chart.js';
-import AnalysisChart from './components/AnalysisChart'; // 新しいコンポーネントをインポート
 
+interface AnalysisPageProps {
+  apiBaseUrl: string;
+}
 // Chart.js のコンポーネントを登録
 ChartJS.register(
   CategoryScale,
@@ -40,7 +41,7 @@ interface AnalysisResults {
   summary_before_injection: { [key: string]: MetricSummary };
   summary_after_injection: { [key: string]: MetricSummary };
   impact_analysis: { [key: string]: ImpactAnalysis };
-  correlation_matrix: { [key: string]: { [key: string]: number } };
+  correlation_matrix: { [key: string]: { [key: string]: number | 'NaN' } };
   first_injection_time: string | null;
   message?: string; // 分析データがない場合など
 }
@@ -62,6 +63,9 @@ interface MeasurementData {
 const AnalysisPage: React.FC = () => {
   const [data, setData] = useState<MeasurementData[]>([]);
   const [analysisResults, setAnalysisResults] = useState<AnalysisResults | null>(null);
+
+  //console.log(analysisResults)//tststs
+
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,19 +75,41 @@ const AnalysisPage: React.FC = () => {
     const fetchData = async () => {
       try {
         setLoading(true);
-        // 測定データを取得
         const dataResponse = await axios.get<MeasurementData[]>(`${API_BASE_URL}/data`);
         setData(dataResponse.data);
 
-        // 分析リクエストを送信
-        const analysisResponse = await axios.post<AnalysisResults>(`${API_BASE_URL}/analyze`, {
+        const analysisResponse = await axios.post<any>(`${API_BASE_URL}/analyze`, { // ★any を使うことで柔軟性を高める (一時的)
           data: dataResponse.data,
         });
-        setAnalysisResults(analysisResponse.data);
+
+        // ここで receivedData の型を確認
+        const receivedData = analysisResponse.data;
+        //console.log("Type of receivedData from axios:", typeof receivedData); // "object" または "string" か？
+
+        let parsedAnalysisResults: AnalysisResults;
+
+        // receivedData が文字列であればJSON.parseでパースする
+        if (typeof receivedData === 'string') {
+          //console.log("Received data is a string. Attempting to parse JSON.");
+          parsedAnalysisResults = JSON.parse(receivedData);
+        } else {
+          // すでにオブジェクトであればそのまま使用
+          //console.log("Received data is already an object.");
+          parsedAnalysisResults = receivedData;
+        }
+
+        //console.log("Parsed Analysis Results (after potential parse):", parsedAnalysisResults); // ★パース後のオブジェクトを確認
+        //console.log("Parsed Analysis Results first_injection_time:", parsedAnalysisResults.first_injection_time); // ★パース後のfirst_injection_timeを確認
+
+        setAnalysisResults(parsedAnalysisResults); // パース後のオブジェクトをステートに設定
 
       } catch (err) {
         if (axios.isAxiosError(err)) {
-          setError(`データの取得または分析に失敗しました: ${err.message} - ${err.response?.data?.error || '不明なエラー'}`);
+          // サーバーからのレスポンスデータが文字列の場合があるため、安全にエラーメッセージを構築
+          const errorMessage = err.response?.data ? 
+                                (typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data)) : 
+                                err.message;
+          setError(`データの取得または分析に失敗しました: ${errorMessage}`);
         } else {
           setError(`予期せぬエラーが発生しました: ${String(err)}`);
         }
@@ -112,27 +138,9 @@ const AnalysisPage: React.FC = () => {
 
   return (
     <div className="container">
-      <h1>ネットワーク品質劣化パターン分析システム</h1>
-
-      <div className="section">
-        <h2>測定データ可視化</h2>
-        <p>グラフ上の赤色の点線は、最初の障害が検出された時点を示します。</p>
-        <div className="charts-grid">
-          {metricsToDisplay.map((metric) => (
-            <AnalysisChart
-              key={metric.key}
-              data={data}
-              metricKey={metric.key}
-              metricLabel={metric.label}
-              firstInjectionTime={analysisResults?.first_injection_time}
-            />
-          ))}
-        </div>
-      </div>
-
       {analysisResults && (
         <div className="analysis-results section">
-          <h2>分析結果</h2>
+          <h1>分析結果</h1>
           {analysisResults.message && <p>{analysisResults.message}</p>}
 
           {analysisResults.first_injection_time && (
@@ -140,7 +148,7 @@ const AnalysisPage: React.FC = () => {
           )}
 
           <h3>通信品質の要約統計 (障害前)</h3>
-          {Object.keys(analysisResults.summary_before_injection).length > 0 ? (
+          {analysisResults?.summary_before_injection && Object.keys(analysisResults.summary_before_injection).length > 0 ? (
             <table>
               <thead>
                 <tr>
@@ -155,10 +163,35 @@ const AnalysisPage: React.FC = () => {
                 {Object.entries(analysisResults.summary_before_injection).map(([metric, summary]) => (
                   <tr key={metric}>
                     <td>{metricsToDisplay.find(m => m.key === metric)?.label || metric}</td>
-                    <td>{summary.mean?.toFixed(3)}</td>
-                    <td>{summary.std?.toFixed(3)}</td>
-                    <td>{summary.min?.toFixed(3)}</td>
-                    <td>{summary.max?.toFixed(3)}</td>
+                    <td>
+                      {
+                        // summary.mean が null でも undefined でもない、かつ数値であるかを確認
+                        summary.mean !== null && summary.mean !== undefined && typeof summary.mean === 'number' && !isNaN(summary.mean)
+                          ? summary.mean.toFixed(3)
+                          : 'N/A' // または '0.000' など、適切に表示
+                      }
+                    </td>
+                    <td>
+                      {
+                        summary.std !== null && summary.std !== undefined && typeof summary.std === 'number' && !isNaN(summary.std)
+                          ? summary.std.toFixed(3)
+                          : 'N/A'
+                      }
+                    </td>
+                    <td>
+                      {
+                        summary.min !== null && summary.min !== undefined && typeof summary.min === 'number' && !isNaN(summary.min)
+                          ? summary.min.toFixed(3)
+                          : 'N/A'
+                      }
+                    </td>
+                    <td>
+                      {
+                        summary.max !== null && summary.max !== undefined && typeof summary.max === 'number' && !isNaN(summary.max)
+                          ? summary.max.toFixed(3)
+                          : 'N/A'
+                      }
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -168,7 +201,7 @@ const AnalysisPage: React.FC = () => {
           )}
 
           <h3>通信品質の要約統計 (障害後)</h3>
-          {Object.keys(analysisResults.summary_after_injection).length > 0 ? (
+          {analysisResults?.summary_after_injection && Object.keys(analysisResults.summary_after_injection).length > 0 ? (
             <table>
               <thead>
                 <tr>
@@ -183,10 +216,35 @@ const AnalysisPage: React.FC = () => {
                 {Object.entries(analysisResults.summary_after_injection).map(([metric, summary]) => (
                   <tr key={metric}>
                     <td>{metricsToDisplay.find(m => m.key === metric)?.label || metric}</td>
-                    <td>{summary.mean?.toFixed(3)}</td>
-                    <td>{summary.std?.toFixed(3)}</td>
-                    <td>{summary.min?.toFixed(3)}</td>
-                    <td>{summary.max?.toFixed(3)}</td>
+                    <td>
+                      {
+                        // summary.mean が null でも undefined でもない、かつ数値であるかを確認
+                        summary.mean !== null && summary.mean !== undefined && typeof summary.mean === 'number' && !isNaN(summary.mean)
+                          ? summary.mean.toFixed(3)
+                          : 'N/A' // または '0.000' など、適切に表示
+                      }
+                    </td>
+                    <td>
+                      {
+                        summary.std !== null && summary.std !== undefined && typeof summary.std === 'number' && !isNaN(summary.std)
+                          ? summary.std.toFixed(3)
+                          : 'N/A'
+                      }
+                    </td>
+                    <td>
+                      {
+                        summary.min !== null && summary.min !== undefined && typeof summary.min === 'number' && !isNaN(summary.min)
+                          ? summary.min.toFixed(3)
+                          : 'N/A'
+                      }
+                    </td>
+                    <td>
+                      {
+                        summary.max !== null && summary.max !== undefined && typeof summary.max === 'number' && !isNaN(summary.max)
+                          ? summary.max.toFixed(3)
+                          : 'N/A'
+                      }
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -196,7 +254,7 @@ const AnalysisPage: React.FC = () => {
           )}
 
           <h3>障害による影響分析 (平均値の変化)</h3>
-          {Object.keys(analysisResults.impact_analysis).length > 0 ? (
+          {analysisResults?.impact_analysis && Object.keys(analysisResults.impact_analysis).length > 0 ? (
             <table>
               <thead>
                 <tr>
@@ -209,10 +267,25 @@ const AnalysisPage: React.FC = () => {
                 {Object.entries(analysisResults.impact_analysis).map(([metric, impact]) => (
                   <tr key={metric}>
                     <td>{metricsToDisplay.find(m => m.key === metric)?.label || metric}</td>
-                    <td className={impact.change_percent > 0 ? 'text-danger' : 'text-success'}>
-                      {impact.change_percent.toFixed(2)}{impact.change_percent === Infinity ? ' (∞)' : ''}%
+                    <td className={
+                      impact.change_percent !== null && impact.change_percent !== undefined && impact.change_percent > 0
+                        ? 'text-danger'
+                        : 'text-success'
+                    }>
+                      {
+                        impact.change_percent !== null && impact.change_percent !== undefined && typeof impact.change_percent === 'number' && !isNaN(impact.change_percent)
+                          ? (impact.change_percent.toFixed(2) + (impact.change_percent === Infinity ? ' (∞)' : '%'))
+                          : 'N/A'
+                      }
                     </td>
-                    <td>{impact.change_absolute.toFixed(3)}</td>
+
+                    <td>
+                      {
+                        impact.change_absolute !== null && impact.change_absolute !== undefined && typeof impact.change_absolute === 'number' && !isNaN(impact.change_absolute)
+                          ? impact.change_absolute.toFixed(3)
+                          : 'N/A'
+                      }
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -222,7 +295,7 @@ const AnalysisPage: React.FC = () => {
           )}
 
           <h3>相関行列</h3>
-          {analysisResults.correlation_matrix && Object.keys(analysisResults.correlation_matrix).length > 0 ? (
+          {analysisResults?.correlation_matrix && Object.keys(analysisResults.correlation_matrix).length > 0 ? (
             <div className="correlation-matrix-container">
               <table>
                 <thead>
@@ -238,7 +311,14 @@ const AnalysisPage: React.FC = () => {
                     <tr key={rowMetric}>
                       <td>{metricsToDisplay.find(m => m.key === rowMetric)?.label || rowMetric}</td>
                       {Object.entries(correlations).map(([colMetric, value]) => (
-                        <td key={colMetric}>{value.toFixed(3)}</td>
+                        <td key={colMetric}>
+                          {
+                            // value が null でも undefined でもない、かつ数値であるかを確認
+                            value !== null && value !== undefined && typeof value === 'number' && !isNaN(value)
+                              ? value.toFixed(3)
+                              : 'N/A'
+                          }
+                        </td>
                       ))}
                     </tr>
                   ))}

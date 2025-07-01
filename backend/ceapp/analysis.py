@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import os
 
@@ -154,16 +155,23 @@ def get_data():
         # result.csv のパスを適切に設定してください
         # 例: Flaskアプリケーションのルートディレクトリに result.csv がある場合
         # または、result.csv が別の場所にある場合は絶対パスを指定
-        csv_file_path = os.path.join(os.path.dirname(__file__), '..', 'result.csv')
+        csv_file_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../result.csv'))
         
         if not os.path.exists(csv_file_path):
             return jsonify({"error": f"File not found: {csv_file_path}"}), 404
 
         df = pd.read_csv(csv_file_path)
-        
-        # timestamp をISOフォーマットに変換してクライアント側で扱いやすくする
-        df['timestamp'] = pd.to_datetime(df['timestamp']).dt.isoformat()
-        
+
+        df['is_injected'] = df['is_injected'].astype(str).str.lower().map({'true': True, 'false': False}).fillna(False)
+        df['timestamp'] = pd.to_datetime(df['timestamp']).apply(lambda x: x.isoformat())
+        metrics = [
+            'rtt_avg_ms', 'packet_loss_percent', 'tcp_throughput_mbps',
+            'udp_throughput_mbps', 'udp_jitter_ms', 'udp_lost_packets', 'udp_lost_percent'
+        ]
+        for metric in metrics:
+            if metric in df.columns:
+                df[metric] = pd.to_numeric(df[metric], errors='coerce')
+                
         return jsonify(df.to_dict(orient='records'))
     except Exception as e:
         app.logger.error(f"Error loading data: {e}")
@@ -186,7 +194,32 @@ def analyze():
         df = pd.DataFrame(data['data'])
         
         analysis_results = analyze_data(df)
+
+        def serialize_value(value):
+            if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+                return None # NaN や Infinity は JSON では null に変換
+            elif isinstance(value, (np.integer, int)):
+                return int(value)
+            elif isinstance(value, (np.floating, float)):
+                return float(value)
+            elif isinstance(value, datetime):
+                return value.isoformat()
+            elif isinstance(value, np.ndarray):
+                return value.tolist()
+            elif isinstance(value, dict):
+                return {k: serialize_value(v) for k, v in value.items()}
+            elif isinstance(value, list):
+                return [serialize_value(elem) for elem in value]
+            elif isinstance(value, pd.DataFrame):
+                return value.to_dict(orient='records')
+            return value
+
+        # analysis_results を完全に変換
+        final_analysis_results = serialize_value(analysis_results)
         
+        return jsonify(final_analysis_results) # 変換後のオブジェクトを返す
+        
+        """
         # datetime オブジェクトをJSONシリアライズ可能な形式に変換
         for key, value in analysis_results.items():
             if isinstance(value, pd.DataFrame):
@@ -197,6 +230,7 @@ def analyze():
                         analysis_results[key][sub_key] = sub_value.isoformat()
         
         return jsonify(analysis_results)
+        """
     except Exception as e:
         app.logger.error(f"Error during analysis: {e}")
         return jsonify({"error": str(e)}), 500

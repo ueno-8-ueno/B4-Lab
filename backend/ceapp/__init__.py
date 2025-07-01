@@ -12,3 +12,4 @@ app.secret_key = os.urandom(24) # グローバルなsecret_key
 
 import ceapp.measure
 import ceapp.insert
+import ceapp.analysis
