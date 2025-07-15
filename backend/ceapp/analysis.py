@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
+import json
 
 from ceapp import app
 
@@ -115,35 +116,6 @@ def analyze_data(df: pd.DataFrame):
 
     return analysis_results
 
-"""
-if __name__ == '__main__':
-    # テストデータを作成してanalysis.pyを単体テストする例
-    test_data = {
-        'timestamp': [
-            datetime(2025, 6, 28, 10, 50, 40),
-            datetime(2025, 6, 28, 10, 50, 44),
-            datetime(2025, 6, 28, 10, 51, 32), # 障害発生のポイント
-            datetime(2025, 6, 28, 10, 51, 46), # 障害発生中
-            datetime(2025, 6, 28, 10, 51, 51), # 障害発生中
-            datetime(2025, 6, 28, 10, 52, 27)  # 障害発生中
-        ],
-        'source_container': ['clab-ospf-pc1'] * 6,
-        'target_container': ['clab-ospf-pc2'] * 6,
-        'rtt_avg_ms': [0.069, 0.068, 0.086, 0.074, 0.075, 0.078],
-        'packet_loss_percent': [0, 0, 0, 0, 0, 0],
-        'tcp_throughput_mbps': [7224.7, 14711.79, 10704.21, 12801.42, 15270.69, 15262.9],
-        'udp_throughput_mbps': [10.02, 10.05, 9.95, 10.05, 10.04, 10.02],
-        'udp_jitter_ms': [1.36, 0.57, 0.10, 0.04, 0.04, 0.23],
-        'udp_lost_packets': [0, 0, 17, 5, 0, 0],
-        'udp_lost_percent': [0, 0, 12.87, 3.75, 0, 0],
-        'is_injected': [False, False, False, True, True, True] # 最初のFalseは障害発生前
-    }
-    test_df = pd.DataFrame(test_data)
-    
-    results = analyze_data(test_df)
-    import json
-    print(json.dumps(results, indent=4))
-"""
 
 # --以下API--
 @app.route('/api/data', methods=['GET'])
@@ -186,12 +158,11 @@ def analyze():
         data = request.json
         if not data or 'data' not in data:
             return jsonify({"error": "No data provided for analysis"}), 400
-        
-        # timestamp を datetime オブジェクトに変換
-        for row in data['data']:
-            row['timestamp'] = datetime.fromisoformat(row['timestamp'])
-            
-        df = pd.DataFrame(data['data'])
+
+        if type(data['data']) is str:
+            df = pd.DataFrame(json.loads(data['data']))
+        else:
+            df = pd.DataFrame(data['data'])
         
         analysis_results = analyze_data(df)
 

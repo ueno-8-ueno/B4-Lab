@@ -56,13 +56,13 @@ interface MeasurementData {
   timestamp: string;
   source_container: string;
   target_container: string;
-  rtt_avg_ms: number;
-  packet_loss_percent: number;
-  tcp_throughput_mbps: number;
-  udp_throughput_mbps: number;
-  udp_jitter_ms: number;
-  udp_lost_packets: number;
-  udp_lost_percent: number;
+  rtt_avg_ms?: number;
+  packet_loss_percent?: number;
+  tcp_throughput_mbps?: number;
+  udp_throughput_mbps?: number;
+  udp_jitter_ms?: number;
+  udp_lost_packets?: number;
+  udp_lost_percent?: number;
   is_injected: boolean;
 }
 

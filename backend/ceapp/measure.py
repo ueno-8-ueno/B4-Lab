@@ -67,7 +67,7 @@ pingの標準出力を解析してRTT avgとロス率を抽出するための関
 """
 def parse_ping_output(ping_output):
     rtt_avg_ms = None
-    packet_loss_percent = None
+    packet_loss_percent = 100
 
     if not ping_output:
         return rtt_avg_ms, packet_loss_percent
@@ -89,7 +89,7 @@ def parse_ping_output(ping_output):
 iperf3のJSON出力を解析してスループット(bps)等を抽出するための関数.
 """
 def parse_iperf3_json_output(iperf_output):
-    throughput_bps, jitter_ms, lost_packets, lost_percent = None, None, None, None
+    throughput_bps, jitter_ms, lost_packets, lost_percent = None, None, None, 100
     if not iperf_output:
         return throughput_bps, jitter_ms, lost_packets, lost_percent
     try:
@@ -101,6 +101,7 @@ def parse_iperf3_json_output(iperf_output):
                 jitter_ms = sum_data.get('jitter_ms')
                 lost_packets = sum_data.get('lost_packets')
                 lost_percent = sum_data.get('lost_percent')
+
     except json.JSONDecodeError:
         print(f"Error: Failed to parse iperf3 JSON output: {iperf_output[:200]}...")
     except KeyError as e:
