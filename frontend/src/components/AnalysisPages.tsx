@@ -369,7 +369,7 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
                   {Object.keys(analysisResults.correlation_matrix).map(metric => (
                     <th key={metric}>{metricsToDisplay.find(m => m.key === metric)?.label || metric}</th>
                   ))}
-                  <th>グラフ</th>{/* 空白防止 */}
+                  {/*<th>グラフ</th>{/* 空白防止 */}
                 </tr>
               </thead>
               <tbody>
@@ -381,7 +381,7 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
                         {typeof value === 'number' && !isNaN(value) ? value.toFixed(3) : 'N/A'}
                       </td>
                     ))}
-                    <td>
+                    {/*<td>
                       <button onClick={() => {
                         const rowMetricLabel = metricsToDisplay.find(m => m.key === rowMetric)?.label || rowMetric;
                         // 選択された行の相関係数をグラフ表示用に整形
