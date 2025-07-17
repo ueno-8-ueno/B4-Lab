@@ -235,7 +235,7 @@ def main_loop_process(stop_event_param):
         for _ in range(current_loop_interval):
             if stop_event_param.is_set():
                 break
-            time.sleep(1)
+            time.sleep(0.1)
     
     print("Measurement loop stopping as requested...")
 
