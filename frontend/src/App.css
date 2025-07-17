@@ -159,3 +159,14 @@ table tbody tr:nth-child(even) {
 table tbody tr:hover {
   background-color: #f1f1f1;
 }
+
+.import-button{
+  background-color: #b6b6b6;
+}
+
+.error{
+  margin-bottom: 10px;
+  background-color: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import axios from 'axios';
 import {
   Chart as ChartJS,
@@ -75,6 +75,7 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
   const [analysisResults, setAnalysisResults] = useState<AnalysisResults | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null); //csvインポート用
 
   // グラフポップアップの状態管理
   const [isGraphPopupOpen, setIsGraphPopupOpen] = useState<boolean>(false);
@@ -115,52 +116,128 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
     setIsGraphPopupOpen(false);
   };
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const dataResponse = await axios.get<MeasurementData[]>(`${apiBaseUrl}/data`);
-        setData(dataResponse.data);
+  // データフェッチ処理を独立した関数に
+    const fetchAndAnalyzeData = async (file?: File) => {
+        try {
+            setLoading(true);
+            setError(null); // エラーをリセット
 
-        const analysisResponse = await axios.post<any>(`${apiBaseUrl}/analyze`, {
-          data: dataResponse.data,
-        });
+            if (file) {
+                // ファイルが指定された場合、ファイルをバックエンドに送信し、整形されたデータを受け取る
+                const formData = new FormData();
+                formData.append('file', file); // 'file'という名前でファイルを追加
 
-        const receivedData = analysisResponse.data;
-        let parsedAnalysisResults: AnalysisResults;
+                const uploadResponse = await axios.post<MeasurementData[]>(
+                    `${apiBaseUrl}/upload_csv`, // ★新しいアップロード用エンドポイントに変更
+                    formData,
+                    {
+                        headers: {
+                            'Content-Type': 'multipart/form-data', // axiosが自動で設定することが多いが、念のため
+                        },
+                    }
+                );
 
-        if (typeof receivedData === 'string') {
-          parsedAnalysisResults = JSON.parse(receivedData);
-        } else {
-          parsedAnalysisResults = receivedData;
+                const uploadedData = uploadResponse.data; // バックエンドから整形されたデータを受け取る
+                setData(uploadedData); // 生データ（整形済み）をdataステートに保存
+
+                // 受け取ったデータを既存の /api/analyze エンドポイントに渡して分析を依頼
+                await sendDataToAnalyze(uploadedData);
+
+            } else {
+                // ファイルが指定されない場合、デフォルトのAPIエンドポイントからデータを取得
+                const dataResponse = await axios.get<MeasurementData[]>(`${apiBaseUrl}/data`);
+                const defaultData = dataResponse.data;
+                setData(defaultData); // 状態を更新
+
+                // デフォルトデータを使って分析（既存の /analyze エンドポイントを使用）
+                await sendDataToAnalyze(defaultData);
+            }
+
+        } catch (err) {
+            if (axios.isAxiosError(err)) {
+                const errorMessage = err.response?.data ?
+                    (typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data)) :
+                    err.message;
+                setError(`データの取得または分析に失敗しました: ${errorMessage}`);
+            } else {
+                setError(`予期せぬエラーが発生しました: ${String(err)}`);
+            }
+            console.error('API Error:', err);
+        } finally {
+            setLoading(false);
         }
-
-        setAnalysisResults(parsedAnalysisResults);
-
-      } catch (err) {
-        if (axios.isAxiosError(err)) {
-          const errorMessage = err.response?.data ?
-            (typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data)) :
-            err.message;
-          setError(`データの取得または分析に失敗しました: ${errorMessage}`);
-        } else {
-          setError(`予期せぬエラーが発生しました: ${String(err)}`);
-        }
-        console.error('API Error:', err);
-      } finally {
-        setLoading(false);
-      }
     };
 
-    fetchData();
+    // 分析のためにデータをバックエンドに送信する関数（変更なし）
+    const sendDataToAnalyze = async (dataToSend: MeasurementData[]) => {
+        try {
+            const analysisResponse = await axios.post<any>(
+                `${apiBaseUrl}/analyze`,
+                { data: dataToSend }, // 送信するデータ
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                }
+            );
+
+            const receivedAnalysisResults = analysisResponse.data;
+            let parsedAnalysisResults: AnalysisResults;
+
+            if (typeof receivedAnalysisResults === 'string') {
+                parsedAnalysisResults = JSON.parse(receivedAnalysisResults);
+            } else {
+                parsedAnalysisResults = receivedAnalysisResults;
+            }
+            setAnalysisResults(parsedAnalysisResults);
+        } catch (err) {
+            throw err; // 再スローして上位で捕捉させる
+        } finally {
+            // sendDataToAnalyze が完了したときにローディングをfalseにするのはfetchAndAnalyzeDataに任せる
+        }
+    };
+
+  useEffect(() => {
+    fetchAndAnalyzeData(); // コンポーネントマウント時にデフォルトのデータをフェッチ
   }, [apiBaseUrl]);
+
+  // ファイルが選択されたときのハンドラー
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files.length > 0) {
+      fetchAndAnalyzeData(event.target.files[0]); // 選択されたファイルを渡して分析
+    }
+  };
+
+  // ファイル選択ダイアログを開くボタンクリックハンドラー
+  const handleImportButtonClick = () => {
+    fileInputRef.current?.click();
+  };
 
   if (loading) {
     return <div className="loading">データを読み込み中...</div>;
   }
 
   if (error) {
-    return <div className="error">エラー: {error}</div>;
+    return (
+      <div>
+        <div className="error">エラー: {error}</div>
+        <div className="section">
+          {/* hidden のファイル入力要素 */}
+          <input
+            type="file"
+            accept=".csv"
+            onChange={handleFileChange}
+            ref={fileInputRef}
+            style={{ display: 'none' }}
+          />
+          {/* ボタンをクリックしてファイル入力要素をトリガー */}
+          <button className="import-button" onClick={handleImportButtonClick}>
+            CSVファイルをインポート
+          </button>
+          <p>※ファイルをインポートするか測定を行ってください。</p>
+        </div>
+      </div>
+    );
   }
 
   if (!analysisResults) {
@@ -170,6 +247,22 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
   return (
     <div className="container">
       <h1>分析結果</h1>
+
+      <div className="section">
+        {/* hidden のファイル入力要素 */}
+        <input
+          type="file"
+          accept=".csv"
+          onChange={handleFileChange}
+          ref={fileInputRef}
+          style={{ display: 'none' }}
+        />
+        {/* ボタンをクリックしてファイル入力要素をトリガー */}
+        <button className="import-button" onClick={handleImportButtonClick}>
+          CSVファイルをインポート
+        </button>
+        <p>※ファイルをインポートしない場合、デフォルトの `result.csv` が使用されます。</p>
+      </div>
 
       {/* 障害発生前の要約統計 */}
       {analysisResults.summary_before_injection && Object.keys(analysisResults.summary_before_injection).length > 0 ? (

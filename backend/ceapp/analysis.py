@@ -4,6 +4,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import os
 import json
+from io import StringIO
 
 from ceapp import app
 
@@ -116,6 +117,24 @@ def analyze_data(df: pd.DataFrame):
 
     return analysis_results
 
+def serialize_value(value):
+    if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+        return None # NaN や Infinity は JSON では null に変換
+    elif isinstance(value, (np.integer, int)):
+        return int(value)
+    elif isinstance(value, (np.floating, float)):
+        return float(value)
+    elif isinstance(value, datetime):
+        return value.isoformat()
+    elif isinstance(value, np.ndarray):
+        return value.tolist()
+    elif isinstance(value, dict):
+        return {k: serialize_value(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [serialize_value(elem) for elem in value]
+    elif isinstance(value, pd.DataFrame):
+        return value.to_dict(orient='records')
+    return value
 
 # --以下API--
 @app.route('/api/data', methods=['GET'])
@@ -166,25 +185,6 @@ def analyze():
         
         analysis_results = analyze_data(df)
 
-        def serialize_value(value):
-            if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
-                return None # NaN や Infinity は JSON では null に変換
-            elif isinstance(value, (np.integer, int)):
-                return int(value)
-            elif isinstance(value, (np.floating, float)):
-                return float(value)
-            elif isinstance(value, datetime):
-                return value.isoformat()
-            elif isinstance(value, np.ndarray):
-                return value.tolist()
-            elif isinstance(value, dict):
-                return {k: serialize_value(v) for k, v in value.items()}
-            elif isinstance(value, list):
-                return [serialize_value(elem) for elem in value]
-            elif isinstance(value, pd.DataFrame):
-                return value.to_dict(orient='records')
-            return value
-
         # analysis_results を完全に変換
         final_analysis_results = serialize_value(analysis_results)
         
@@ -207,3 +207,52 @@ def analyze():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/upload_csv', methods=['POST'])
+def upload_csv():
+    """
+    アップロードされたCSVファイルを受け取り、Pandas DataFrameに変換し、
+    整形されたJSONデータをフロントエンドに返すAPIエンドポイント。
+    """
+    try:
+        if 'file' not in request.files:
+            app.logger.warning("No file part in the request for /upload_csv.")
+            return jsonify({"error": "No file part"}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            app.logger.warning("No selected file for /upload_csv.")
+            return jsonify({"error": "No selected file"}), 400
+
+        if file and file.filename.endswith('.csv'):
+            csv_data = StringIO(file.read().decode('utf-8'))
+            
+            df = pd.read_csv(csv_data)
+
+            # ここから、堅牢なデータ変換ロジックを適用 (analyze 関数と共通化される部分)
+            df = df.replace(r'^\s*$', np.nan, regex=True)
+
+            df['is_injected'] = df['is_injected'].astype(str).str.lower().map({'true': True, 'false': False}).fillna(False)
+            
+            metrics = [
+                'rtt_avg_ms', 'packet_loss_percent', 'tcp_throughput_mbps',
+                'udp_throughput_mbps', 'udp_jitter_ms', 'udp_lost_packets', 'udp_lost_percent'
+            ]
+            for metric in metrics:
+                if metric in df.columns:
+                    df[metric] = pd.to_numeric(df[metric], errors='coerce')
+                    df[metric] = df[metric].astype(float)
+
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+
+            app.logger.info(f"Uploaded CSV file processed. DataFrame dtypes:\n{df.dtypes}")
+            app.logger.info(f"Uploaded CSV file null counts:\n{df.isnull().sum()}")
+
+            # 整形されたDataFrameをJSON形式（辞書のリスト）でフロントエンドに返す
+            return jsonify(serialize_value(df.to_dict(orient='records')))
+
+        app.logger.warning(f"Invalid file type uploaded to /upload_csv: {file.filename}")
+        return jsonify({"error": "Invalid file type. Please upload a CSV file."}), 400
+
+    except Exception as e:
+        app.logger.error(f"Error in /upload_csv endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
