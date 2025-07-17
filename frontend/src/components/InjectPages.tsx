@@ -39,8 +39,8 @@ interface FaultConfig {
   loop_node2: string;
   loop_dummy_dest_ip: string;
   loop_duration_sec: string | number;
-  loop_ping_target_ip?: string; 
-  loop_ping_count?: string | number; 
+  //loop_ping_target_ip?: string; 
+  //loop_ping_count?: string | number; 
 }
 
 const DEFAULT_FAULT_CONFIG: Omit<FaultConfig, 'id'> = {
@@ -56,10 +56,10 @@ const DEFAULT_FAULT_CONFIG: Omit<FaultConfig, 'id'> = {
     bandwidth_latency_ms: '50ms',
     loop_node1: '',
     loop_node2: '',
-    loop_dummy_dest_ip: '192.168.7.2/32',
+    loop_dummy_dest_ip: '192.168.12.10/32',
     loop_duration_sec: 10,
-    loop_ping_target_ip: '192.168.7.2/32', 
-    loop_ping_count: 5,      
+    //loop_ping_target_ip: '192.168.7.2/32', 
+    //loop_ping_count: 5,      
 };
 
 const TOPOLOGY_SESSION_KEY_PREFIX = 'injectPage_topology_';
@@ -199,7 +199,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                     <div><label htmlFor={`loop_node2-${localConfig.id}`}>ループノード2:</label><select id={`loop_node2-${localConfig.id}`} value={localConfig.loop_node2} onChange={e => handleLocalChange('loop_node2', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{[...allContainers].sort().map(c => <option key={`${localConfig.id}-ln2-${c}`} value={c}>{c}</option>)}</select></div>
                     <div><label htmlFor={`loop_dummy_dest_ip-${localConfig.id}`}>ダミー宛先IP (CIDR):</label><input type="text" id={`loop_dummy_dest_ip-${localConfig.id}`} value={localConfig.loop_dummy_dest_ip} onChange={e => handleLocalChange('loop_dummy_dest_ip', e.target.value)} placeholder="e.g., 10.255.255.255/32" disabled={isFormDisabled} /></div>
                     <div><label htmlFor={`loop_duration_sec-${localConfig.id}`}>ループ持続時間 (秒):</label><input type="number" id={`loop_duration_sec-${localConfig.id}`} value={localConfig.loop_duration_sec} onChange={e => handleLocalChange('loop_duration_sec', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
-                    <hr style={{margin: "10px 0"}} />
+                    {/*<hr style={{margin: "10px 0"}} />
                     <p style={{fontSize: "0.9em", color: "#333", fontWeight: "bold"}}>ループ中Ping観測 (任意):</p>
                     <div>
                         <label htmlFor={`loop_ping_target_ip-${localConfig.id}`}>Ping宛先IP:</label>
@@ -214,6 +214,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
                                min="1" disabled={isFormDisabled} />
                     </div>
                     <p style={{fontSize: "0.8em", color: "#666", marginLeft: "155px"}}>指定した2ノード間でダミー宛先へのルートを相互に向け、時間制限付きでループを発生させます。解除は自動で行われます。</p>
+                    */}
                 </>
             )}
         </div>
@@ -411,8 +412,8 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         singlePayload.loop_node2 = fc.loop_node2;
         singlePayload.loop_dummy_dest_ip = fc.loop_dummy_dest_ip;
         singlePayload.loop_duration_sec = Number(fc.loop_duration_sec);
-        if (fc.loop_ping_target_ip) singlePayload.loop_ping_target_ip = fc.loop_ping_target_ip;
-        if (fc.loop_ping_count) singlePayload.loop_ping_count = Number(fc.loop_ping_count);
+        //if (fc.loop_ping_target_ip) singlePayload.loop_ping_target_ip = fc.loop_ping_target_ip;
+        //if (fc.loop_ping_count) singlePayload.loop_ping_count = Number(fc.loop_ping_count);
       }
       return singlePayload;
     });

@@ -192,7 +192,7 @@ def inject_fault_api():
 
         command_list_node1 = [] 
         command_list_node2 = []
-        ping_command_during_loop = [] 
+        #ping_command_during_loop = [] 
         additional_commands_after_delay = [] 
         target_display = ""
         current_message = "" 
@@ -324,6 +324,7 @@ def inject_fault_api():
 
                 current_message += f"Setting up timed loop. Next hops: {loop_node1_name}->{next_hop_on_node1_to_node2}, {loop_node2_name}->{next_hop_on_node2_to_node1}. "
 
+                """
                 if loop_ping_target_ip and loop_ping_count:
                     try:
                         ping_c = int(loop_ping_count)
@@ -332,6 +333,7 @@ def inject_fault_api():
                             current_message += f"Will also attempt to ping {loop_ping_target_ip} ({ping_c} times) from {loop_node1_name} during the loop. "
                     except ValueError:
                         app.logger.warning(f"Invalid loop_ping_count value '{loop_ping_count}', skipping ping during loop.")
+                """
             else:
                 current_message = f'Unknown fault type: {fault_type}'
                 results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': 'N/A'})
@@ -340,8 +342,8 @@ def inject_fault_api():
             cmds_to_run_now = []
             if command_list_node1: cmds_to_run_now.append(command_list_node1)
             if command_list_node2: cmds_to_run_now.append(command_list_node2)
-            if ping_command_during_loop and fault_type == 'routing_loop_timed': # ping コマンドをリストの最後に追加
-                cmds_to_run_now.append(ping_command_during_loop)
+            #if ping_command_during_loop and fault_type == 'routing_loop_timed': # ping コマンドをリストの最後に追加
+            #    cmds_to_run_now.append(ping_command_during_loop)
             
             if cmds_to_run_now:
                 all_step_successful = True
