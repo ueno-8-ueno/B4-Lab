@@ -185,7 +185,7 @@ def inject_fault_api():
 
         loop_node1_name = fault_data.get('loop_node1')
         loop_node2_name = fault_data.get('loop_node2')
-        loop_dummy_dest_ip = fault_data.get('loop_dummy_dest_ip', "192.168.7.2/32") 
+        loop_dummy_dest_ip = fault_data.get('loop_dummy_dest_ip', "192.168.12.10/32") 
         loop_duration_sec = fault_data.get('loop_duration_sec', 10) 
         loop_ping_target_ip = fault_data.get('loop_ping_target_ip')
         loop_ping_count = fault_data.get('loop_ping_count', 5) 
