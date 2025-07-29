@@ -129,3 +129,44 @@ button:disabled {
   border-radius: 4px;
   min-width: 200px;
 }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+  background-color: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.05);
+  border-radius: 8px;
+  overflow: hidden; /* 角丸を効かせるため */
+}
+
+table th, table td {
+  border: 1px solid #ddd;
+  padding: 12px 15px;
+  text-align: left;
+}
+
+table th {
+  background-color: #f8f8f8;
+  font-weight: bold;
+  color: #444;
+}
+
+table tbody tr:nth-child(even) {
+  background-color: #f9f9f9;
+}
+
+table tbody tr:hover {
+  background-color: #f1f1f1;
+}
+
+.import-button{
+  background-color: #b6b6b6;
+}
+
+.error{
+  margin-bottom: 10px;
+  background-color: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
