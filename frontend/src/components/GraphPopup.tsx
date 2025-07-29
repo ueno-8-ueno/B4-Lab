@@ -161,7 +161,6 @@ const GraphPopup: React.FC<GraphPopupProps> = ({
       },
     };
   } else if (chartType === 'bar' || chartType === 'scatter') {
-    // Bar/Scatter グラフのロジック (変更なし)
     if (chartType === 'scatter' && xAxisKey && yAxisKey) {
       chartData = {
         datasets: [
@@ -315,7 +314,7 @@ const GraphPopup: React.FC<GraphPopupProps> = ({
     maxHeight: '90%',
     overflowY: 'auto',
     minWidth: '400px',
-    minHeight: `${effectiveChartHeight + 150}px`, // チェックボックス分の高さも考慮
+    minHeight: `${effectiveChartHeight + 150}px`,
     display: 'flex',
     flexDirection: 'column',
     gap: '20px',

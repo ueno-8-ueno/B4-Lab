@@ -114,7 +114,7 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
     xAxisKey?: string,
     yAxisKey?: string,
     trendData?: {slope: number, intercept: number, startX: number, endX: number, firstTimestamp: string}[], // 今回は移動平均をこれとして渡す
-    firstInjectionTime?: string | null // ★追加：障害発生時刻
+    firstInjectionTime?: string | null
   ) => {
     setGraphPopupTitle(title);
     setGraphPopupData(data);
@@ -286,7 +286,7 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
         'timestamp',
         'value',
         undefined, // trendData (今回は使わない)
-        analysisResults.first_injection_time // ★追加：障害発生時刻を渡す
+        analysisResults.first_injection_time
     );
   };
 
@@ -309,7 +309,6 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
         <p>※ファイルをインポートしない場合、デフォルトの `result.csv` が使用されます。</p>
       </div>
 
-      {/* 時系列グラフセクションの追加 */}
       <div className="section">
         <h2>時系列推移 (移動平均)</h2>
         <p>各指標のボタンをクリックすると、時間経過に伴う値の変化と<strong>移動平均</strong>が表示されます。</p>
@@ -322,8 +321,6 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
         </div>
       </div>
 
-
-      {/* 障害前後の要約統計統合テーブル */}
       <div className="section">
         <h2>要約統計 (障害生成前 / 障害生成後)</h2>
         <table>
@@ -409,7 +406,7 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
         yAxisKey={graphPopupYAxisKey}
         trendData={graphPopupTrendData}
         chartHeight={400}
-        firstInjectionTime={analysisResults?.first_injection_time} // ★追加：障害発生時刻
+        firstInjectionTime={analysisResults?.first_injection_time}
       />
     </div>
   );
