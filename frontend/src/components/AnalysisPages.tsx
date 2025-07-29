@@ -1,3 +1,5 @@
+// frontend/src/components/AnalysisPages.tsx
+
 import React, { useEffect, useState, useRef } from 'react';
 import axios from 'axios';
 import {
@@ -13,8 +15,10 @@ import {
   LineController,
   BarController,
 } from 'chart.js';
+//import type { ChartData, ChartOptions } from 'chart.js';
 import annotationPlugin from 'chartjs-plugin-annotation';
 import GraphPopup from './GraphPopup';
+import '../App.css';
 
 // Chart.js のコンポーネントとコントローラーを登録
 ChartJS.register(
@@ -34,8 +38,6 @@ ChartJS.register(
 interface MetricSummary {
   mean: number;
   std: number;
-  min: number;
-  max: number;
 }
 
 interface ImpactAnalysis {
@@ -43,26 +45,31 @@ interface ImpactAnalysis {
   change_absolute: number;
 }
 
+interface TimeSeriesAnalysisResult {
+  moving_averages: { [key: string]: (number | null)[] };
+}
+
 interface AnalysisResults {
   summary_before_injection: { [key: string]: MetricSummary };
   summary_after_injection: { [key: string]: MetricSummary };
   impact_analysis: { [key: string]: ImpactAnalysis };
-  correlation_matrix: { [key: string]: { [key: string]: number | null } };
+  time_series_analysis: TimeSeriesAnalysisResult;
   first_injection_time: string | null;
   message?: string;
+  raw_data?: MeasurementData[];
 }
 
 interface MeasurementData {
   timestamp: string;
   source_container: string;
   target_container: string;
-  rtt_avg_ms?: number;
-  packet_loss_percent?: number;
-  tcp_throughput_mbps?: number;
-  udp_throughput_mbps?: number;
-  udp_jitter_ms?: number;
-  udp_lost_packets?: number;
-  udp_lost_percent?: number;
+  rtt_avg_ms: number;
+  packet_loss_percent: number;
+  tcp_throughput_mbps: number;
+  udp_throughput_mbps: number;
+  udp_jitter_ms: number;
+  udp_lost_packets: number;
+  udp_lost_percent: number;
   is_injected: boolean;
 }
 
@@ -75,15 +82,18 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
   const [analysisResults, setAnalysisResults] = useState<AnalysisResults | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null); //csvインポート用
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // グラフポップアップの状態管理
   const [isGraphPopupOpen, setIsGraphPopupOpen] = useState<boolean>(false);
   const [graphPopupTitle, setGraphPopupTitle] = useState<string>('');
   const [graphPopupData, setGraphPopupData] = useState<any[]>([]);
   const [graphPopupDataKeys, setGraphPopupDataKeys] = useState<string[]>([]);
   const [graphPopupLabelKey, setGraphPopupLabelKey] = useState<string>('');
-  const [graphPopupChartType, setGraphPopupChartType] = useState<'line' | 'bar'>('bar');
+  const [graphPopupChartType, setGraphPopupChartType] = useState<'line' | 'bar' | 'scatter'>('bar');
+  const [graphPopupXAxisKey, setGraphPopupXAxisKey] = useState<string>('');
+  const [graphPopupYAxisKey, setGraphPopupYAxisKey] = useState<string>('');
+  const [graphPopupTrendData, setGraphPopupTrendData] = useState<{slope: number, intercept: number, startX: number, endX: number, firstTimestamp: string}[]>([]);
+
 
   const metricsToDisplay = [
     { key: 'rtt_avg_ms', label: '平均 RTT (ms)' },
@@ -95,120 +105,94 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
     { key: 'udp_lost_percent', label: 'UDP 損失率 (%)' },
   ];
 
-  // グラフポップアップを開く関数
   const handleOpenGraphPopup = (
     title: string,
     data: any[],
     dataKeys: string[],
     labelKey: string,
-    chartType: 'line' | 'bar' = 'bar'
+    chartType: 'line' | 'bar' | 'scatter' = 'bar',
+    xAxisKey?: string,
+    yAxisKey?: string,
+    trendData?: {slope: number, intercept: number, startX: number, endX: number, firstTimestamp: string}[], // 今回は移動平均をこれとして渡す
+    firstInjectionTime?: string | null // ★追加：障害発生時刻
   ) => {
     setGraphPopupTitle(title);
     setGraphPopupData(data);
     setGraphPopupDataKeys(dataKeys);
     setGraphPopupLabelKey(labelKey);
     setGraphPopupChartType(chartType);
+    setGraphPopupXAxisKey(xAxisKey || '');
+    setGraphPopupYAxisKey(yAxisKey || '');
+    setGraphPopupTrendData(trendData || []);
     setIsGraphPopupOpen(true);
   };
 
-  // グラフポップアップを閉じる関数
   const handleCloseGraphPopup = () => {
     setIsGraphPopupOpen(false);
+    setGraphPopupTrendData([]);
   };
 
-  // データフェッチ処理を独立した関数に
-    const fetchAndAnalyzeData = async (file?: File) => {
-        try {
-            setLoading(true);
-            setError(null); // エラーをリセット
+  const fetchAndAnalyzeData = async (file?: File) => {
+    try {
+      setLoading(true);
+      setError(null);
 
-            if (file) {
-                // ファイルが指定された場合、ファイルをバックエンドに送信し、整形されたデータを受け取る
-                const formData = new FormData();
-                formData.append('file', file); // 'file'という名前でファイルを追加
+      let analysisResultFetched: AnalysisResults | null = null;
+      let rawDataFetched: MeasurementData[] = [];
 
-                const uploadResponse = await axios.post<MeasurementData[]>(
-                    `${apiBaseUrl}/upload_csv`, // ★新しいアップロード用エンドポイントに変更
-                    formData,
-                    {
-                        headers: {
-                            'Content-Type': 'multipart/form-data', // axiosが自動で設定することが多いが、念のため
-                        },
-                    }
-                );
+      if (file) {
+        const formData = new FormData();
+        formData.append('file', file);
 
-                const uploadedData = uploadResponse.data; // バックエンドから整形されたデータを受け取る
-                setData(uploadedData); // 生データ（整形済み）をdataステートに保存
+        const uploadResponse = await axios.post<AnalysisResults>(
+          `${apiBaseUrl}/upload_csv_and_analyze`,
+          formData,
+          { headers: { 'Content-Type': 'multipart/form-data' } }
+        );
+        analysisResultFetched = uploadResponse.data;
+        rawDataFetched = uploadResponse.data.raw_data || [];
 
-                // 受け取ったデータを既存の /api/analyze エンドポイントに渡して分析を依頼
-                await sendDataToAnalyze(uploadedData);
+      } else {
+        const dataResponse = await axios.get<MeasurementData[]>(`${apiBaseUrl}/data`);
+        const defaultData = dataResponse.data;
+        rawDataFetched = defaultData;
 
-            } else {
-                // ファイルが指定されない場合、デフォルトのAPIエンドポイントからデータを取得
-                const dataResponse = await axios.get<MeasurementData[]>(`${apiBaseUrl}/data`);
-                const defaultData = dataResponse.data;
-                setData(defaultData); // 状態を更新
+        const analysisResponse = await axios.post<AnalysisResults>(
+          `${apiBaseUrl}/analyze`,
+          { data: defaultData },
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+        analysisResultFetched = analysisResponse.data;
+      }
+      
+      setData(rawDataFetched);
+      setAnalysisResults(analysisResultFetched);
 
-                // デフォルトデータを使って分析（既存の /analyze エンドポイントを使用）
-                await sendDataToAnalyze(defaultData);
-            }
-
-        } catch (err) {
-            if (axios.isAxiosError(err)) {
-                const errorMessage = err.response?.data ?
-                    (typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data)) :
-                    err.message;
-                setError(`データの取得または分析に失敗しました: ${errorMessage}`);
-            } else {
-                setError(`予期せぬエラーが発生しました: ${String(err)}`);
-            }
-            console.error('API Error:', err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // 分析のためにデータをバックエンドに送信する関数（変更なし）
-    const sendDataToAnalyze = async (dataToSend: MeasurementData[]) => {
-        try {
-            const analysisResponse = await axios.post<any>(
-                `${apiBaseUrl}/analyze`,
-                { data: dataToSend }, // 送信するデータ
-                {
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                }
-            );
-
-            const receivedAnalysisResults = analysisResponse.data;
-            let parsedAnalysisResults: AnalysisResults;
-
-            if (typeof receivedAnalysisResults === 'string') {
-                parsedAnalysisResults = JSON.parse(receivedAnalysisResults);
-            } else {
-                parsedAnalysisResults = receivedAnalysisResults;
-            }
-            setAnalysisResults(parsedAnalysisResults);
-        } catch (err) {
-            throw err; // 再スローして上位で捕捉させる
-        } finally {
-            // sendDataToAnalyze が完了したときにローディングをfalseにするのはfetchAndAnalyzeDataに任せる
-        }
-    };
-
-  useEffect(() => {
-    fetchAndAnalyzeData(); // コンポーネントマウント時にデフォルトのデータをフェッチ
-  }, [apiBaseUrl]);
-
-  // ファイルが選択されたときのハンドラー
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files.length > 0) {
-      fetchAndAnalyzeData(event.target.files[0]); // 選択されたファイルを渡して分析
+    } catch (err) {
+      if (axios.isAxiosError(err)) {
+        const errorMessage = err.response?.data ?
+          (typeof err.response.data === 'string' ? err.response.data : JSON.stringify(err.response.data)) :
+          err.message;
+        setError(`データの取得または分析に失敗しました: ${errorMessage}`);
+      } else {
+        setError(`予期せぬエラーが発生しました: ${String(err)}`);
+      }
+      console.error('API Error:', err);
+    } finally {
+      setLoading(false);
     }
   };
 
-  // ファイル選択ダイアログを開くボタンクリックハンドラー
+  useEffect(() => {
+    fetchAndAnalyzeData();
+  }, [apiBaseUrl]);
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files.length > 0) {
+      fetchAndAnalyzeData(event.target.files[0]);
+    }
+  };
+
   const handleImportButtonClick = () => {
     fileInputRef.current?.click();
   };
@@ -218,38 +202,100 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
   }
 
   if (error) {
-    return (
-      <div>
-        <div className="error">エラー: {error}</div>
-        <div className="section">
-          {/* hidden のファイル入力要素 */}
-          <input
-            type="file"
-            accept=".csv"
-            onChange={handleFileChange}
-            ref={fileInputRef}
-            style={{ display: 'none' }}
-          />
-          {/* ボタンをクリックしてファイル入力要素をトリガー */}
-          <button className="import-button" onClick={handleImportButtonClick}>
-            CSVファイルをインポート
-          </button>
-          <p>※ファイルをインポートするか測定を行ってください。</p>
-        </div>
-      </div>
-    );
+    return <div>
+             <div className="error">エラー: {error}</div>
+             <div className="section">
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileChange}
+                  ref={fileInputRef}
+                  style={{ display: 'none' }}
+                />
+                <button className="import-button" onClick={handleImportButtonClick}>
+                  CSVファイルをインポート
+                </button>
+              </div>
+           </div>;
   }
 
   if (!analysisResults) {
-    return <div className="no-data">分析結果がありません。</div>;
+    return <div>
+             <div className="no-data">分析結果がありません。</div>
+             <div className="section">
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileChange}
+                  ref={fileInputRef}
+                  style={{ display: 'none' }}
+                />
+                <button className="import-button" onClick={handleImportButtonClick}>
+                  CSVファイルをインポート
+                </button>
+              </div>
+           </div>;
   }
+
+  // 時系列グラフ表示の関数 (移動平均の表示も含む)
+  const renderTimeSeriesGraphWithMA = (metricKey: string) => {
+    const metricLabel = metricsToDisplay.find(m => m.key === metricKey)?.label || metricKey;
+    
+    const rawMetricData = data.map(d => ({
+        timestamp: d.timestamp,
+        value: d[metricKey as keyof MeasurementData]
+    })).filter(item => typeof item.value === 'number' && !isNaN(item.value) && isFinite(item.value as number));
+
+    if (rawMetricData.length === 0) {
+        alert(`${metricLabel} の時系列グラフを表示できる有効なデータがありません。`);
+        return;
+    }
+
+    const maBefore = analysisResults.time_series_analysis.moving_averages[`${metricKey}_before`];
+    const maAfter = analysisResults.time_series_analysis.moving_averages[`${metricKey}_after`];
+
+    const graphData = rawMetricData.map((d, index) => {
+        let maValue: number | null = null;
+        if (analysisResults.first_injection_time && d.timestamp < analysisResults.first_injection_time) {
+            if (maBefore && index < maBefore.length) {
+                maValue = maBefore[index] !== null && typeof maBefore[index] === 'number' && !isNaN(maBefore[index] as number) ? maBefore[index] as number : null;
+            }
+        } else {
+            const firstInjectionIndex = data.findIndex(item => item.timestamp === analysisResults.first_injection_time);
+            if (firstInjectionIndex !== -1 && maAfter) {
+                // 障害後のインデックスを調整。maAfterは障害後データの先頭からのインデックス
+                const maIndex = index - firstInjectionIndex;
+                if (maIndex >= 0 && maIndex < maAfter.length) {
+                    maValue = maAfter[maIndex] !== null && typeof maAfter[maIndex] === 'number' && !isNaN(maAfter[maIndex] as number) ? maAfter[maIndex] as number : null;
+                }
+            }
+        }
+        return {
+            timestamp: d.timestamp,
+            rawValue: d.value,
+            movingAverage: maValue,
+        };
+    });
+
+    handleOpenGraphPopup(
+        `時系列推移 (MA付き): ${metricLabel}`,
+        graphData,
+        ['rawValue', 'movingAverage'],
+        'timestamp',
+        'line',
+        'timestamp',
+        'value',
+        undefined, // trendData (今回は使わない)
+        analysisResults.first_injection_time // ★追加：障害発生時刻を渡す
+    );
+  };
+
 
   return (
     <div className="container">
       <h1>分析結果</h1>
 
       <div className="section">
-        {/* hidden のファイル入力要素 */}
         <input
           type="file"
           accept=".csv"
@@ -257,247 +303,98 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
           ref={fileInputRef}
           style={{ display: 'none' }}
         />
-        {/* ボタンをクリックしてファイル入力要素をトリガー */}
         <button className="import-button" onClick={handleImportButtonClick}>
           CSVファイルをインポート
         </button>
         <p>※ファイルをインポートしない場合、デフォルトの `result.csv` が使用されます。</p>
       </div>
 
-      {/* 障害発生前の要約統計 */}
-      {analysisResults.summary_before_injection && Object.keys(analysisResults.summary_before_injection).length > 0 ? (
-        <div className="section">
-          <h2>通信品質の要約統計 (障害前)</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>指標</th>{/* 空白防止 */}
-                <th>平均</th>{/* 空白防止 */}
-                <th>標準偏差</th>{/* 空白防止 */}
-                <th>最小</th>{/* 空白防止 */}
-                <th>最大</th>{/* 空白防止 */}
-                <th>グラフ</th>{/* 空白防止 */}
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(analysisResults.summary_before_injection).map(([metric, summary]) => (
-                <tr key={metric}>
-                  <td>{metricsToDisplay.find(m => m.key === metric)?.label || metric}</td>
-                  <td>
-                    {summary.mean !== null && summary.mean !== undefined && typeof summary.mean === 'number' && !isNaN(summary.mean)
-                      ? summary.mean.toFixed(3)
-                      : 'N/A'}
+      {/* 時系列グラフセクションの追加 */}
+      <div className="section">
+        <h2>時系列推移 (移動平均)</h2>
+        <p>各指標のボタンをクリックすると、時間経過に伴う値の変化と<strong>移動平均</strong>が表示されます。</p>
+        <div className="time-series-buttons">
+          {metricsToDisplay.map(metric => (
+            <button key={`ts-ma-${metric.key}`} onClick={() => renderTimeSeriesGraphWithMA(metric.key)}>
+              {metric.label}の推移とMA
+            </button>
+          ))}
+        </div>
+      </div>
+
+
+      {/* 障害前後の要約統計統合テーブル */}
+      <div className="section">
+        <h2>要約統計 (障害生成前 / 障害生成後)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>指標</th>
+              <th>平均 (前 / 後 (変化率) )</th>
+              <th>標準偏差 (前 / 後)</th>
+              <th>グラフ (平均)</th>
+              <th>グラフ (標準偏差)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {metricsToDisplay.map(metric => {
+              const summaryBefore = analysisResults.summary_before_injection?.[metric.key];
+              const summaryAfter = analysisResults.summary_after_injection?.[metric.key];
+
+              const meanBefore = summaryBefore?.mean !== null && summaryBefore?.mean !== undefined && typeof summaryBefore.mean === 'number' && !isNaN(summaryBefore.mean) && isFinite(summaryBefore.mean) ? summaryBefore.mean.toFixed(3) : 'N/A';
+              const meanAfter = summaryAfter?.mean !== null && summaryAfter?.mean !== undefined && typeof summaryAfter.mean === 'number' && !isNaN(summaryAfter.mean) && isFinite(summaryAfter.mean) ? summaryAfter.mean.toFixed(3) : 'N/A';
+
+              let percentageChange: number | null = null;
+              if (summaryBefore?.mean !== 0 && typeof summaryBefore?.mean === 'number' && typeof summaryAfter?.mean === 'number') {
+                percentageChange = ((summaryAfter.mean - summaryBefore.mean) / summaryBefore.mean) * 100;
+              } else if (summaryBefore?.mean === 0 && typeof summaryAfter?.mean === 'number' && summaryAfter.mean !== 0) {
+                percentageChange = Infinity;
+              } else {
+                percentageChange = 0;
+              }
+              const changeText = percentageChange !== null && isFinite(percentageChange) ? ` (${percentageChange.toFixed(2)}%)` : (percentageChange === Infinity ? ' (∞%)' : ' (0.00%)');
+
+              const stdBefore = summaryBefore?.std !== null && summaryBefore?.std !== undefined && typeof summaryBefore.std === 'number' && !isNaN(summaryBefore.std) && isFinite(summaryBefore.std) ? summaryBefore.std.toFixed(3) : 'N/A';
+              const stdAfter = summaryAfter?.std !== null && summaryAfter?.std !== undefined && typeof summaryAfter.std === 'number' && !isNaN(summaryAfter.std) && isFinite(summaryAfter.std) ? summaryAfter.std.toFixed(3) : 'N/A';
+
+              return (
+                <tr key={metric.key}>
+                  <td>{metric.label}</td>
+                  <td className="combined-cell">
+                    <span className="value-before">{meanBefore}</span>
+                    <span className="separator"> / </span>
+                    <span className="value-after">{meanAfter}</span>
+                    <span className="change-percent">{changeText}</span>
                   </td>
-                  <td>
-                    {summary.std !== null && summary.std !== undefined && typeof summary.std === 'number' && !isNaN(summary.std)
-                      ? summary.std.toFixed(3)
-                      : 'N/A'}
-                  </td>
-                  <td>
-                    {summary.min !== null && summary.min !== undefined && typeof summary.min === 'number' && !isNaN(summary.min)
-                      ? summary.min.toFixed(3)
-                      : 'N/A'}
-                  </td>
-                  <td>
-                    {summary.max !== null && summary.max !== undefined && typeof summary.max === 'number' && !isNaN(summary.max)
-                      ? summary.max.toFixed(3)
-                      : 'N/A'}
+                  <td className="combined-cell">
+                    <span className="value-before">{stdBefore}</span>
+                    <span className="separator"> / </span>
+                    <span className="value-after">{stdAfter}</span>
                   </td>
                   <td>
                     <button onClick={() => {
-                      const metricLabel = metricsToDisplay.find(m => m.key === metric)?.label || metric;
                       const chartData = [
-                        { label: '平均', value: summary.mean },
-                        { label: '標準偏差', value: summary.std },
-                        { label: '最小', value: summary.min },
-                        { label: '最大', value: summary.max },
-                      ].filter(item => typeof item.value === 'number' && !isNaN(item.value) && isFinite(item.value)); // 有効な数値のみフィルタリング
-
-                      handleOpenGraphPopup(`障害前要約: ${metricLabel}`, chartData, ['value'], 'label', 'bar');
+                        { label: '障害前', value: summaryBefore?.mean },
+                        { label: '障害後', value: summaryAfter?.mean },
+                      ].filter(item => typeof item.value === 'number' && !isNaN(item.value) && isFinite(item.value));
+                      handleOpenGraphPopup(`平均: ${metric.label}`, chartData, ['value'], 'label', 'bar');
                     }}>表示</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="section">
-          <h2>通信品質の要約統計 (障害前)</h2>
-          <p>障害発生前のデータがありません。</p>
-        </div>
-      )}
-
-      {/* 障害発生後の要約統計 */}
-      {analysisResults.summary_after_injection && Object.keys(analysisResults.summary_after_injection).length > 0 ? (
-        <div className="section">
-          <h2>通信品質の要約統計 (障害後)</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>指標</th>{/* 空白防止 */}
-                <th>平均</th>{/* 空白防止 */}
-                <th>標準偏差</th>{/* 空白防止 */}
-                <th>最小</th>{/* 空白防止 */}
-                <th>最大</th>{/* 空白防止 */}
-                <th>グラフ</th>{/* 空白防止 */}
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(analysisResults.summary_after_injection).map(([metric, summary]) => (
-                <tr key={metric}>
-                  <td>{metricsToDisplay.find(m => m.key === metric)?.label || metric}</td>
-                  <td>
-                    {summary.mean !== null && summary.mean !== undefined && typeof summary.mean === 'number' && !isNaN(summary.mean)
-                      ? summary.mean.toFixed(3)
-                      : 'N/A'}
-                  </td>
-                  <td>
-                    {summary.std !== null && summary.std !== undefined && typeof summary.std === 'number' && !isNaN(summary.std)
-                      ? summary.std.toFixed(3)
-                      : 'N/A'}
-                  </td>
-                  <td>
-                    {summary.min !== null && summary.min !== undefined && typeof summary.min === 'number' && !isNaN(summary.min)
-                      ? summary.min.toFixed(3)
-                      : 'N/A'}
-                  </td>
-                  <td>
-                    {summary.max !== null && summary.max !== undefined && typeof summary.max === 'number' && !isNaN(summary.max)
-                      ? summary.max.toFixed(3)
-                      : 'N/A'}
                   </td>
                   <td>
                     <button onClick={() => {
-                      const metricLabel = metricsToDisplay.find(m => m.key === metric)?.label || metric;
                       const chartData = [
-                        { label: '平均', value: summary.mean },
-                        { label: '標準偏差', value: summary.std },
-                        { label: '最小', value: summary.min },
-                        { label: '最大', value: summary.max },
-                      ].filter(item => typeof item.value === 'number' && !isNaN(item.value) && isFinite(item.value)); // 有効な数値のみフィルタリング
-
-                      handleOpenGraphPopup(`障害後要約: ${metricLabel}`, chartData, ['value'], 'label', 'bar');
+                        { label: '障害前', value: summaryBefore?.std },
+                        { label: '障害後', value: summaryAfter?.std },
+                      ].filter(item => typeof item.value === 'number' && !isNaN(item.value) && isFinite(item.value));
+                      handleOpenGraphPopup(`標準偏差: ${metric.label}`, chartData, ['value'], 'label', 'bar');
                     }}>表示</button>
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="section">
-          <h2>通信品質の要約統計 (障害後)</h2>
-          <p>障害発生後のデータがありません。</p>
-        </div>
-      )}
-
-      {/* 影響分析 */}
-      {analysisResults.impact_analysis && Object.keys(analysisResults.impact_analysis).length > 0 ? (
-        <div className="section">
-          <h2>障害による影響分析 (平均値の変化)</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>指標</th>{/* 空白防止 */}
-                <th>変化率 (%)</th>{/* 空白防止 */}
-                <th>絶対的な変化</th>{/* 空白防止 */}
-                <th>グラフ</th>{/* 空白防止 */}
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(analysisResults.impact_analysis).map(([metric, impact]) => (
-                <tr key={metric}>
-                  <td>{metricsToDisplay.find(m => m.key === metric)?.label || metric}</td>
-                  <td className={
-                    impact.change_percent !== null && impact.change_percent !== undefined && typeof impact.change_percent === 'number' && !isNaN(impact.change_percent) && isFinite(impact.change_percent)
-                      ? (impact.change_percent > 0 ? 'text-danger' : 'text-success')
-                      : ''
-                  }>
-                    {
-                      impact.change_percent !== null && impact.change_percent !== undefined && typeof impact.change_percent === 'number' && !isNaN(impact.change_percent) && isFinite(impact.change_percent)
-                        ? (impact.change_percent.toFixed(2) + (impact.change_percent === Infinity ? ' (∞)' : '%'))
-                        : 'N/A'
-                    }
-                  </td>
-                  <td>
-                    {
-                      impact.change_absolute !== null && impact.change_absolute !== undefined && typeof impact.change_absolute === 'number' && !isNaN(impact.change_absolute) && isFinite(impact.change_absolute)
-                        ? impact.change_absolute.toFixed(3)
-                        : 'N/A'
-                    }
-                  </td>
-                  <td>
-                    <button onClick={() => {
-                      const metricLabel = metricsToDisplay.find(m => m.key === metric)?.label || metric;
-                      const chartData = [
-                        { label: '変化率 (%)', value: impact.change_percent },
-                        { label: '絶対的な変化', value: impact.change_absolute },
-                      ].filter(item => typeof item.value === 'number' && !isNaN(item.value) && isFinite(item.value)); // 有効な数値のみフィルタリング
-
-                      handleOpenGraphPopup(`影響分析: ${metricLabel}`, chartData, ['value'], 'label', 'bar');
-                    }}>表示</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="section">
-          <h2>障害による影響分析 (平均値の変化)</h2>
-          <p>障害による影響の分析データがありません。</p>
-        </div>
-      )}
-
-      {/* 相関行列 */}
-      {analysisResults.correlation_matrix && Object.keys(analysisResults.correlation_matrix).length > 0 ? (
-        <div className="section">
-          <h2>相関行列</h2>
-          <div className="correlation-matrix-container">
-            <table>
-              <thead>
-                <tr>
-                  <th>指標</th>{/* 空白防止 */}
-                  {Object.keys(analysisResults.correlation_matrix).map(metric => (
-                    <th key={metric}>{metricsToDisplay.find(m => m.key === metric)?.label || metric}</th>
-                  ))}
-                  {/*<th>グラフ</th>{/* 空白防止 */}
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(analysisResults.correlation_matrix).map(([rowMetric, correlations]) => (
-                  <tr key={rowMetric}>
-                    <td>{metricsToDisplay.find(m => m.key === rowMetric)?.label || rowMetric}</td>{/* 行の指標ラベルを表示 */}
-                    {Object.entries(correlations).map(([colMetric, value]) => (
-                      <td key={colMetric}>
-                        {typeof value === 'number' && !isNaN(value) ? value.toFixed(3) : 'N/A'}
-                      </td>
-                    ))}
-                    {/*<td>
-                      <button onClick={() => {
-                        const rowMetricLabel = metricsToDisplay.find(m => m.key === rowMetric)?.label || rowMetric;
-                        // 選択された行の相関係数をグラフ表示用に整形
-                        const chartData = Object.entries(correlations).map(([colMetric, value]) => ({
-                          label: metricsToDisplay.find(m => m.key === colMetric)?.label || colMetric,
-                          correlation: value
-                        })).filter(item => typeof item.correlation === 'number' && !isNaN(item.correlation) && isFinite(item.filter(Boolean))); // 有効な数値のみフィルタリング
-
-                        handleOpenGraphPopup(`相関: ${rowMetricLabel} との相関`, chartData, ['correlation'], 'label', 'bar');
-                      }}>表示</button>
-                    </td>{/* 空白防止 */}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ) : (
-        <div className="section">
-          <h2>相関行列</h2>
-          <p>相関分析の結果がありません。</p>
-        </div>
-      )}
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
       {/* グラフポップアップコンポーネント */}
       <GraphPopup
@@ -508,6 +405,11 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
         dataKeys={graphPopupDataKeys}
         labelKey={graphPopupLabelKey}
         chartType={graphPopupChartType}
+        xAxisKey={graphPopupXAxisKey}
+        yAxisKey={graphPopupYAxisKey}
+        trendData={graphPopupTrendData}
+        chartHeight={400}
+        firstInjectionTime={analysisResults?.first_injection_time} // ★追加：障害発生時刻
       />
     </div>
   );
