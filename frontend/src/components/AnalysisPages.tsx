@@ -97,7 +97,7 @@ const AnalysisPage: React.FC<AnalysisPageProps> = ({ apiBaseUrl }) => {
 
   const metricsToDisplay = [
     { key: 'rtt_avg_ms', label: '平均 RTT (ms)' },
-    { key: 'packet_loss_percent', label: 'パケット損失率 (%)' },
+    { key: 'packet_loss_percent', label: 'ICMPパケット損失率 (%)' },
     { key: 'tcp_throughput_mbps', label: 'TCP スループット (Mbps)' },
     { key: 'udp_throughput_mbps', label: 'UDP スループット (Mbps)' },
     { key: 'udp_jitter_ms', label: 'UDP ジッタ (ms)' },
