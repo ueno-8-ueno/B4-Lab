@@ -8,6 +8,7 @@ import os
 import ipaddress
 import requests 
 import threading # 時間制限付きループ解除のため
+import time # スケジューリングのため
 
 # (run_command, get_clab_containers, get_container_interface_details は変更なしと仮定)
 # (get_detailed_links_from_networks は詳細なリンク情報を返すものを想定)
@@ -154,6 +155,227 @@ def set_measure_fault_flag(is_injected_flag: bool):
         print(f"Error calling measure.py API to set fault flag: {e}")
     return False
 
+def execute_single_fault(fault_data, shared_results, fault_index, detailed_links_cache=None):
+    """
+    単一の障害を実行する関数（スケジューリング用）
+    """
+    fault_type = fault_data.get('fault_type')
+    
+    target_node = fault_data.get('target_node')
+    target_interface = fault_data.get('target_interface')
+    target_link_str = "" #fault_data.get('target_link') #削除
+    
+    latency_ms = fault_data.get('latency_ms')
+    jitter_ms = fault_data.get('jitter_ms')
+    correlation_percent = fault_data.get('correlation_percent')
+    
+    bandwidth_rate_kbit = fault_data.get('bandwidth_rate_kbit')
+    bandwidth_burst_bytes = fault_data.get('bandwidth_burst_bytes')
+    bandwidth_latency_ms = fault_data.get('bandwidth_latency_ms')
+
+    loop_node1_name = fault_data.get('loop_node1')
+    loop_node2_name = fault_data.get('loop_node2')
+    loop_dummy_dest_ip = fault_data.get('loop_dummy_dest_ip', "192.168.12.10/32") 
+    loop_duration_sec = fault_data.get('loop_duration_sec', 10) 
+    loop_ping_target_ip = fault_data.get('loop_ping_target_ip')
+    loop_ping_count = fault_data.get('loop_ping_count', 5) 
+
+    command_list_node1 = [] 
+    command_list_node2 = []
+    additional_commands_after_delay = [] 
+    target_display = ""
+    current_message = "" 
+    current_status = "error" 
+
+    if fault_type == 'routing_loop_timed' and detailed_links_cache is None: 
+        _current_containers_for_loop = get_clab_containers() 
+        detailed_links_cache = get_detailed_links_from_networks(_current_containers_for_loop if _current_containers_for_loop else [])
+
+    try:
+        if fault_type == 'link_down' or fault_type == 'link_up':
+            if not target_interface:
+                current_message = 'Target link and interface must be selected/entered for link operations.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_link_str or 'N/A'}
+                return
+            
+            node_to_act_on = target_node #or target_link_str.split('|')[0]
+            target_display = f"{fault_type} on interface {target_interface} of node {node_to_act_on}"
+            action = "down" if fault_type == 'link_down' else "up"
+            command_list_node1 = ["docker", "exec", node_to_act_on, "ip", "link", "set", target_interface, action]
+
+        elif fault_type in ['node_stop', 'node_start', 'node_pause', 'node_unpause']:
+            if not target_node:
+                current_message = 'Target node must be selected.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': 'N/A'}
+                return
+            target_display = f"node {target_node}"
+            action = fault_type.split('_')[1] 
+            command_list_node1 = ["docker", action, target_node]
+        
+        elif fault_type == 'add_latency':
+            if not (target_node and target_interface and latency_ms):
+                current_message = 'Target Node, Target Interface, and Latency (ms) are required.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"}
+                return
+            try:
+                lat_val = int(latency_ms); assert lat_val > 0
+            except: 
+                current_message = f'Invalid Latency: {latency_ms}'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display':target_display}
+                return
+
+            target_display = f"latency ({latency_ms}ms) on {target_node}/{target_interface}"
+            tc_cmd_parts = ["docker","exec",target_node,"tc","qdisc","add","dev",target_interface,"root","netem","delay",f"{latency_ms}ms"]
+            if jitter_ms:
+                try: jit_val = int(jitter_ms); assert jit_val > 0; tc_cmd_parts.extend(["jitter", f"{jit_val}ms"])
+                except: app.logger.warning(f"Invalid jitter '{jitter_ms}', ignoring.")
+            if correlation_percent:
+                try: corr_val = int(correlation_percent); assert 0 <= corr_val <= 100; tc_cmd_parts.extend(["correlation", f"{corr_val}%"])
+                except: app.logger.warning(f"Invalid correlation '{correlation_percent}', ignoring.")
+            command_list_node1 = tc_cmd_parts
+            current_message += f"Attempting to add latency on {target_node}/{target_interface}. "
+
+        elif fault_type == 'limit_bandwidth':
+            if not (target_node and target_interface and bandwidth_rate_kbit):
+                current_message = 'Target Node, Interface, and Rate (kbit) are required.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"}
+                return
+            try: rate_val = int(bandwidth_rate_kbit); assert rate_val > 0
+            except: 
+                current_message = f'Invalid Rate: {bandwidth_rate_kbit}'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display':target_display}
+                return
+
+            target_display = f"bandwidth limit ({bandwidth_rate_kbit}kbit) on {target_node}/{target_interface}"
+            burst = bandwidth_burst_bytes or f"{int(bandwidth_rate_kbit) * 1000 // 8 // 10}"
+            tbf_latency = bandwidth_latency_ms or "50ms"
+            command_list_node1 = ["docker","exec",target_node,"tc","qdisc","add","dev",target_interface,"root","tbf", 
+                            "rate",f"{bandwidth_rate_kbit}kbit","burst",str(burst),"latency",str(tbf_latency)]
+            current_message += f"Attempting to limit bandwidth on {target_node}/{target_interface}. "
+
+        elif fault_type == 'tc_clear':
+            if not (target_node and target_interface):
+                current_message = 'Target Node and Interface are required for tc_clear.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"}
+                return
+            target_display = f"tc rules on {target_node}/{target_interface}"
+            command_list_node1 = ["docker", "exec", target_node, "tc", "qdisc", "del", "dev", target_interface, "root"]
+            current_message += f"Attempting to clear tc qdisc on {target_node}/{target_interface}. "
+        
+        elif fault_type == 'routing_loop_timed':
+            if not (loop_node1_name and loop_node2_name and loop_dummy_dest_ip and loop_duration_sec):
+                current_message = 'Node1, Node2, Dummy Destination IP, and Duration are required for timed routing loop.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{loop_node1_name or 'N/A'}-{loop_node2_name or 'N/A'}"}
+                return
+            if loop_node1_name == loop_node2_name:
+                current_message = 'Node1 and Node2 for routing loop must be different.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': loop_node1_name}
+                return
+            
+            duration_val_for_loop = 10 
+            try:
+                duration_val_for_loop = int(loop_duration_sec)
+                if duration_val_for_loop <= 0: raise ValueError("Duration must be positive.")
+            except ValueError:
+                current_message = f'Invalid Loop Duration value: {loop_duration_sec}. Must be a positive integer.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_display}
+                return
+
+            target_display = f"timed routing loop ({duration_val_for_loop}s) between {loop_node1_name} and {loop_node2_name} for dummy dest {loop_dummy_dest_ip}"
+
+            link_info_for_loop = None
+            if detailed_links_cache: 
+                for link in detailed_links_cache: 
+                    nodes_in_link = sorted(link['nodes'])
+                    selected_nodes_sorted = sorted([loop_node1_name, loop_node2_name])
+                    if nodes_in_link == selected_nodes_sorted:
+                        link_info_for_loop = link
+                        break
+            
+            if not link_info_for_loop:
+                current_message = f'No direct link found between {loop_node1_name} and {loop_node2_name} in the detected topology. Cannot determine next hops for loop.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_display}
+                return
+
+            node1_link_details = link_info_for_loop['interface_details'].get(loop_node1_name)
+            node2_link_details = link_info_for_loop['interface_details'].get(loop_node2_name)
+
+            if not (node1_link_details and node2_link_details and node1_link_details.get('ip_address') and node2_link_details.get('ip_address')):
+                current_message = f'Could not retrieve valid interface IP details for the link between {loop_node1_name} and {loop_node2_name}.'
+                shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_display}
+                return
+
+            next_hop_on_node1_to_node2 = node2_link_details['ip_address']
+            next_hop_on_node2_to_node1 = node1_link_details['ip_address']
+
+            command_list_node1 = ["docker", "exec", loop_node1_name, "ip", "route", "add", loop_dummy_dest_ip, "via", next_hop_on_node1_to_node2]
+            command_list_node2 = ["docker", "exec", loop_node2_name, "ip", "route", "add", loop_dummy_dest_ip, "via", next_hop_on_node2_to_node1]
+            
+            del_command_node1 = ["docker", "exec", loop_node1_name, "ip", "route", "del", loop_dummy_dest_ip, "via", next_hop_on_node1_to_node2]
+            del_command_node2 = ["docker", "exec", loop_node2_name, "ip", "route", "del", loop_dummy_dest_ip, "via", next_hop_on_node2_to_node1]
+            additional_commands_after_delay.append(del_command_node1)
+            additional_commands_after_delay.append(del_command_node2)
+
+            current_message += f"Setting up timed loop. Next hops: {loop_node1_name}->{next_hop_on_node1_to_node2}, {loop_node2_name}->{next_hop_on_node2_to_node1}. "
+
+        else:
+            current_message = f'Unknown fault type: {fault_type}'
+            shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': 'N/A'}
+            return
+
+        cmds_to_run_now = []
+        if command_list_node1: cmds_to_run_now.append(command_list_node1)
+        if command_list_node2: cmds_to_run_now.append(command_list_node2)
+        
+        if cmds_to_run_now:
+            all_step_successful = True
+            for cmd_to_run in cmds_to_run_now:
+                stdout, stderr = run_command(cmd_to_run)
+                node_name_for_log = cmd_to_run[2] 
+                if stdout: current_message += f" stdout({node_name_for_log}): {stdout}."
+                if stderr: current_message += f" stderr({node_name_for_log}): {stderr}."
+                
+                if stderr and any(err_keyword in stderr.lower() for err_keyword in ["error", "failed", "no such", "cannot", "invalid"]):
+                    all_step_successful = False
+                    break 
+                elif stdout is None and stderr is None and fault_type != 'tc_clear':
+                    all_step_successful = False
+                    current_message += f" Command on {node_name_for_log} failed with no output."
+                    break
+            
+            if all_step_successful:
+                current_status = 'success'
+
+                if fault_type == 'routing_loop_timed' and additional_commands_after_delay:
+                    def execute_delayed_commands(commands_to_del_list, duration):
+                        print(f"Executing delayed cleanup for routing loop after {duration} seconds...")
+                        for cmd_del in commands_to_del_list:
+                            print(f"  Deleting route: {' '.join(cmd_del)}")
+                            del_stdout, del_err = run_command(cmd_del)
+                            if del_err:
+                                print(f"  Error deleting route: {del_err}. Stdout: {del_stdout}")
+                            elif del_stdout:
+                                print(f"  Delete route stdout: {del_stdout}")
+                        print("Delayed cleanup finished.")
+                    
+                    loop_duration_from_data = int(fault_data.get('loop_duration_sec', 10)) 
+                    timer = threading.Timer(loop_duration_from_data, execute_delayed_commands, args=[list(additional_commands_after_delay), loop_duration_from_data])
+                    timer.start()
+                    current_message += f" Loop cleanup scheduled in {loop_duration_from_data} seconds."
+            else: 
+                current_status = 'error'
+                current_message += ' One or more setup commands failed.'
+        elif not command_list_node1 and not command_list_node2:
+             current_message = 'Could not generate command.'
+             current_status = 'error'
+
+    except Exception as e:
+        current_message = f'Unexpected error processing fault {fault_type}: {str(e)}'
+        current_status = 'error'
+        app.logger.error(f"Execute single fault error for {fault_type}: {e}", exc_info=True)
+    
+    shared_results[fault_index] = {'fault_type': fault_type, 'status': current_status, 'message': current_message.strip(), 'target_display': target_display}
+
 @app.route('/api/insert/fault', methods=['POST'])
 def inject_fault_api():
     fault_definitions = request.get_json() 
@@ -166,250 +388,88 @@ def inject_fault_api():
     if fault_definitions: 
         set_measure_fault_flag(True)
 
-    _current_detailed_links_for_loop = None 
+    # スケジュール情報に基づいてソート（delay_from_first_fault_sec の昇順）
+    sorted_fault_definitions = sorted(fault_definitions, key=lambda x: x.get('delay_from_first_fault_sec', 0))
+    
+    # 共有結果オブジェクトを作成（スレッド間で結果を共有するため）
+    shared_results = {}
+    
+    # routing_loop_timed用のキャッシュを事前に取得
+    _current_detailed_links_for_loop = None
+    if any(fd.get('fault_type') == 'routing_loop_timed' for fd in sorted_fault_definitions):
+        _current_containers_for_loop = get_clab_containers()
+        _current_detailed_links_for_loop = get_detailed_links_from_networks(_current_containers_for_loop if _current_containers_for_loop else [])
 
-    for fault_data in fault_definitions: 
-        fault_type = fault_data.get('fault_type')
+    # スケジュールに基づいて障害を実行
+    execution_threads = []
+    start_time = time.time()
+    
+    for index, fault_data in enumerate(sorted_fault_definitions):
+        delay_seconds = fault_data.get('delay_from_first_fault_sec', 0)
         
-        target_node = fault_data.get('target_node')
-        target_interface = fault_data.get('target_interface')
-        target_link_str = "" #fault_data.get('target_link') #削除
-        
-        latency_ms = fault_data.get('latency_ms')
-        jitter_ms = fault_data.get('jitter_ms')
-        correlation_percent = fault_data.get('correlation_percent')
-        
-        bandwidth_rate_kbit = fault_data.get('bandwidth_rate_kbit')
-        bandwidth_burst_bytes = fault_data.get('bandwidth_burst_bytes')
-        bandwidth_latency_ms = fault_data.get('bandwidth_latency_ms')
-
-        loop_node1_name = fault_data.get('loop_node1')
-        loop_node2_name = fault_data.get('loop_node2')
-        loop_dummy_dest_ip = fault_data.get('loop_dummy_dest_ip', "192.168.12.10/32") 
-        loop_duration_sec = fault_data.get('loop_duration_sec', 10) 
-        loop_ping_target_ip = fault_data.get('loop_ping_target_ip')
-        loop_ping_count = fault_data.get('loop_ping_count', 5) 
-
-        command_list_node1 = [] 
-        command_list_node2 = []
-        #ping_command_during_loop = [] 
-        additional_commands_after_delay = [] 
-        target_display = ""
-        current_message = "" 
-        current_status = "error" 
-
-        if fault_type == 'routing_loop_timed' and _current_detailed_links_for_loop is None: 
-            _current_containers_for_loop = get_clab_containers() 
-            _current_detailed_links_for_loop = get_detailed_links_from_networks(_current_containers_for_loop if _current_containers_for_loop else [])
-
-        try:
-            if fault_type == 'link_down' or fault_type == 'link_up':
-                if not target_interface:
-                    current_message = 'Target link and interface must be selected/entered for link operations.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_link_str or 'N/A'})
-                    continue 
-                
-                node_to_act_on = target_node #or target_link_str.split('|')[0]
-                target_display = f"{fault_type} on interface {target_interface} of node {node_to_act_on}"
-                #target_display = f"{fault_type} on link {target_link_str.replace('|','-')} interface {target_interface} of node {node_to_act_on}"
-                action = "down" if fault_type == 'link_down' else "up"
-                command_list_node1 = ["docker", "exec", node_to_act_on, "ip", "link", "set", target_interface, action]
-
-            elif fault_type in ['node_stop', 'node_start', 'node_pause', 'node_unpause']:
-                if not target_node:
-                    current_message = 'Target node must be selected.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': 'N/A'})
-                    continue
-                target_display = f"node {target_node}"
-                action = fault_type.split('_')[1] 
-                command_list_node1 = ["docker", action, target_node]
+        if delay_seconds == 0:
+            # 即座に実行
+            print(f"Executing fault {index+1} immediately: {fault_data.get('fault_type')}")
+            execute_single_fault(fault_data, shared_results, index, _current_detailed_links_for_loop)
+        else:
+            # 遅延実行のためのスレッドを作成
+            def delayed_execution(fault_data_copy, result_index, delay):
+                print(f"Waiting {delay} seconds before executing fault {result_index+1}: {fault_data_copy.get('fault_type')}")
+                time.sleep(delay)
+                print(f"Executing scheduled fault {result_index+1}: {fault_data_copy.get('fault_type')}")
+                execute_single_fault(fault_data_copy, shared_results, result_index, _current_detailed_links_for_loop)
             
-            elif fault_type == 'add_latency':
-                if not (target_node and target_interface and latency_ms):
-                    current_message = 'Target Node, Target Interface, and Latency (ms) are required.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"})
-                    continue
-                try:
-                    lat_val = int(latency_ms); assert lat_val > 0
-                except: current_message = f'Invalid Latency: {latency_ms}'; results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display':target_display}); continue
-
-                target_display = f"latency ({latency_ms}ms) on {target_node}/{target_interface}"
-                tc_cmd_parts = ["docker","exec",target_node,"tc","qdisc","add","dev",target_interface,"root","netem","delay",f"{latency_ms}ms"]
-                if jitter_ms:
-                    try: jit_val = int(jitter_ms); assert jit_val > 0; tc_cmd_parts.extend(["jitter", f"{jit_val}ms"])
-                    except: app.logger.warning(f"Invalid jitter '{jitter_ms}', ignoring.")
-                if correlation_percent:
-                    try: corr_val = int(correlation_percent); assert 0 <= corr_val <= 100; tc_cmd_parts.extend(["correlation", f"{corr_val}%"])
-                    except: app.logger.warning(f"Invalid correlation '{correlation_percent}', ignoring.")
-                command_list_node1 = tc_cmd_parts
-                current_message += f"Attempting to add latency on {target_node}/{target_interface}. "
-
-            elif fault_type == 'limit_bandwidth':
-                if not (target_node and target_interface and bandwidth_rate_kbit):
-                    current_message = 'Target Node, Interface, and Rate (kbit) are required.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"})
-                    continue
-                try: rate_val = int(bandwidth_rate_kbit); assert rate_val > 0
-                except: current_message = f'Invalid Rate: {bandwidth_rate_kbit}'; results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display':target_display}); continue
-
-                target_display = f"bandwidth limit ({bandwidth_rate_kbit}kbit) on {target_node}/{target_interface}"
-                burst = bandwidth_burst_bytes or f"{int(bandwidth_rate_kbit) * 1000 // 8 // 10}"
-                tbf_latency = bandwidth_latency_ms or "50ms"
-                command_list_node1 = ["docker","exec",target_node,"tc","qdisc","add","dev",target_interface,"root","tbf", 
-                                "rate",f"{bandwidth_rate_kbit}kbit","burst",str(burst),"latency",str(tbf_latency)]
-                current_message += f"Attempting to limit bandwidth on {target_node}/{target_interface}. "
-
-            elif fault_type == 'tc_clear':
-                if not (target_node and target_interface):
-                    current_message = 'Target Node and Interface are required for tc_clear.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{target_node or 'N/A'}/{target_interface or 'N/A'}"})
-                    continue
-                target_display = f"tc rules on {target_node}/{target_interface}"
-                command_list_node1 = ["docker", "exec", target_node, "tc", "qdisc", "del", "dev", target_interface, "root"]
-                current_message += f"Attempting to clear tc qdisc on {target_node}/{target_interface}. "
-            
-            elif fault_type == 'routing_loop_timed':
-                if not (loop_node1_name and loop_node2_name and loop_dummy_dest_ip and loop_duration_sec):
-                    current_message = 'Node1, Node2, Dummy Destination IP, and Duration are required for timed routing loop.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': f"{loop_node1_name or 'N/A'}-{loop_node2_name or 'N/A'}"})
-                    continue
-                if loop_node1_name == loop_node2_name:
-                    current_message = 'Node1 and Node2 for routing loop must be different.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': loop_node1_name})
-                    continue
-                
-                duration_val_for_loop = 10 
-                try:
-                    duration_val_for_loop = int(loop_duration_sec)
-                    if duration_val_for_loop <= 0: raise ValueError("Duration must be positive.")
-                except ValueError:
-                    current_message = f'Invalid Loop Duration value: {loop_duration_sec}. Must be a positive integer.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_display})
-                    continue
-
-                target_display = f"timed routing loop ({duration_val_for_loop}s) between {loop_node1_name} and {loop_node2_name} for dummy dest {loop_dummy_dest_ip}"
-
-                link_info_for_loop = None
-                if _current_detailed_links_for_loop: 
-                    for link in _current_detailed_links_for_loop: 
-                        nodes_in_link = sorted(link['nodes'])
-                        selected_nodes_sorted = sorted([loop_node1_name, loop_node2_name])
-                        if nodes_in_link == selected_nodes_sorted:
-                            link_info_for_loop = link
-                            break
-                
-                if not link_info_for_loop:
-                    current_message = f'No direct link found between {loop_node1_name} and {loop_node2_name} in the detected topology. Cannot determine next hops for loop.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_display})
-                    continue
-
-                node1_link_details = link_info_for_loop['interface_details'].get(loop_node1_name)
-                node2_link_details = link_info_for_loop['interface_details'].get(loop_node2_name)
-
-                if not (node1_link_details and node2_link_details and node1_link_details.get('ip_address') and node2_link_details.get('ip_address')):
-                    current_message = f'Could not retrieve valid interface IP details for the link between {loop_node1_name} and {loop_node2_name}.'
-                    results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': target_display})
-                    continue
-
-                next_hop_on_node1_to_node2 = node2_link_details['ip_address']
-                next_hop_on_node2_to_node1 = node1_link_details['ip_address']
-
-                command_list_node1 = ["docker", "exec", loop_node1_name, "ip", "route", "add", loop_dummy_dest_ip, "via", next_hop_on_node1_to_node2]
-                command_list_node2 = ["docker", "exec", loop_node2_name, "ip", "route", "add", loop_dummy_dest_ip, "via", next_hop_on_node2_to_node1]
-                
-                del_command_node1 = ["docker", "exec", loop_node1_name, "ip", "route", "del", loop_dummy_dest_ip, "via", next_hop_on_node1_to_node2]
-                del_command_node2 = ["docker", "exec", loop_node2_name, "ip", "route", "del", loop_dummy_dest_ip, "via", next_hop_on_node2_to_node1]
-                additional_commands_after_delay.append(del_command_node1)
-                additional_commands_after_delay.append(del_command_node2)
-
-                current_message += f"Setting up timed loop. Next hops: {loop_node1_name}->{next_hop_on_node1_to_node2}, {loop_node2_name}->{next_hop_on_node2_to_node1}. "
-
-                """
-                if loop_ping_target_ip and loop_ping_count:
-                    try:
-                        ping_c = int(loop_ping_count)
-                        if ping_c > 0:
-                            ping_command_during_loop = ["docker", "exec", "-it", loop_node1_name, "ping", "-c", str(ping_c), "-i", "0.2", "-W", "1", loop_ping_target_ip]
-                            current_message += f"Will also attempt to ping {loop_ping_target_ip} ({ping_c} times) from {loop_node1_name} during the loop. "
-                    except ValueError:
-                        app.logger.warning(f"Invalid loop_ping_count value '{loop_ping_count}', skipping ping during loop.")
-                """
-            else:
-                current_message = f'Unknown fault type: {fault_type}'
-                results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message, 'target_display': 'N/A'})
-                continue
-
-            cmds_to_run_now = []
-            if command_list_node1: cmds_to_run_now.append(command_list_node1)
-            if command_list_node2: cmds_to_run_now.append(command_list_node2)
-            #if ping_command_during_loop and fault_type == 'routing_loop_timed': # ping コマンドをリストの最後に追加
-            #    cmds_to_run_now.append(ping_command_during_loop)
-            
-            if cmds_to_run_now:
-                all_step_successful = True
-                for cmd_to_run in cmds_to_run_now:
-                    stdout, stderr = run_command(cmd_to_run)
-                    node_name_for_log = cmd_to_run[2] 
-                    if stdout: current_message += f" stdout({node_name_for_log}): {stdout}."
-                    if stderr: current_message += f" stderr({node_name_for_log}): {stderr}."
-                    
-                    is_ping_cmd = cmd_to_run[3] == "ping" if len(cmd_to_run) > 3 else False
-
-                    if stderr and any(err_keyword in stderr.lower() for err_keyword in ["error", "failed", "no such", "cannot", "invalid"]):
-                        if not is_ping_cmd: 
-                            all_step_successful = False
-                            break 
-                        else: 
-                            current_message += f" (Ping to {loop_ping_target_ip} might have failed or timed out from {node_name_for_log})."
-
-                    elif stdout is None and stderr is None and fault_type != 'tc_clear' and not is_ping_cmd:
-                        all_step_successful = False
-                        current_message += f" Command on {node_name_for_log} failed with no output."
-                        break
-                
-                if all_step_successful:
-                    current_status = 'success'
-                    any_fault_injected_successfully = True
-
-                    if fault_type == 'routing_loop_timed' and additional_commands_after_delay:
-                        def execute_delayed_commands(commands_to_del_list, duration):
-                            print(f"Executing delayed cleanup for routing loop after {duration} seconds...")
-                            for cmd_del in commands_to_del_list:
-                                print(f"  Deleting route: {' '.join(cmd_del)}")
-                                del_stdout, del_err = run_command(cmd_del)
-                                if del_err:
-                                    print(f"  Error deleting route: {del_err}. Stdout: {del_stdout}")
-                                elif del_stdout:
-                                    print(f"  Delete route stdout: {del_stdout}")
-                            print("Delayed cleanup finished.")
-                        
-                        loop_duration_from_data = int(fault_data.get('loop_duration_sec', 10)) 
-                        timer = threading.Timer(loop_duration_from_data, execute_delayed_commands, args=[list(additional_commands_after_delay), loop_duration_from_data])
-                        timer.start()
-                        current_message += f" Loop cleanup scheduled in {loop_duration_from_data} seconds."
-                else: 
-                    current_status = 'error'
-                    if not ("Ping to" in current_message): 
-                        current_message += ' One or more setup commands failed.'
-            elif not command_list_node1 and not command_list_node2:
-                 current_message = 'Could not generate command.'
-                 current_status = 'error'
-
-        except Exception as e:
-            current_message = f'Unexpected error processing fault {fault_type}: {str(e)}'
-            current_status = 'error'
-            app.logger.error(f"Inject fault API error for {fault_type}: {e}", exc_info=True)
-        
-        results.append({'fault_type': fault_type, 'status': current_status, 'message': current_message.strip(), 'target_display': target_display})
+            thread = threading.Thread(
+                target=delayed_execution, 
+                args=(fault_data.copy(), index, delay_seconds)
+            )
+            thread.start()
+            execution_threads.append(thread)
+    
+    # 全てのスレッドの完了を待つ
+    for thread in execution_threads:
+        thread.join()
+    
+    # 結果を元の順序で再構築
+    results = []
+    for i in range(len(sorted_fault_definitions)):
+        if i in shared_results:
+            results.append(shared_results[i])
+            if shared_results[i]['status'] in ['success', 'warning']:
+                any_fault_injected_successfully = True
+        else:
+            # スレッドで処理されなかった場合の fallback
+            results.append({
+                'fault_type': sorted_fault_definitions[i].get('fault_type', 'unknown'),
+                'status': 'error',
+                'message': 'Failed to execute scheduled fault',
+                'target_display': 'N/A'
+            })
 
     final_summary_message = f"Fault injection process completed. {len(results)} fault(s) attempted. "
     success_count = sum(1 for r in results if r['status'] == 'success' or r['status'] == 'warning')
     final_summary_message += f"{success_count} succeeded (or with warnings). "
     
-    detailed_messages_for_display_list = [f"  - {r['fault_type']} on {r['target_display']}: {r['status'].upper()} - {r['message']}" for r in results]
+    # スケジュール情報を結果メッセージに含める
+    scheduled_count = sum(1 for fd in sorted_fault_definitions if fd.get('delay_from_first_fault_sec', 0) > 0)
+    if scheduled_count > 0:
+        final_summary_message += f"{scheduled_count} fault(s) were scheduled for delayed execution. "
+    
+    detailed_messages_for_display_list = []
+    for i, (r, fd) in enumerate(zip(results, sorted_fault_definitions)):
+        delay = fd.get('delay_from_first_fault_sec', 0)
+        delay_info = f" (scheduled +{delay}s)" if delay > 0 else " (immediate)"
+        detailed_messages_for_display_list.append(
+            f"  - {r['fault_type']} on {r['target_display']}: {r['status'].upper()} - {r['message']}{delay_info}"
+        )
     
     overall_status = 'error' if any(r['status'] == 'error' for r in results) else 'success'
     if success_count > 0 and overall_status == 'error': 
         overall_status = 'warning' 
     
-    return jsonify({'status': overall_status, 'message': final_summary_message, 'details': results, 'detailed_messages_for_display': "\n".join(detailed_messages_for_display_list)})
+    return jsonify({
+        'status': overall_status, 
+        'message': final_summary_message, 
+        'details': results, 
+        'detailed_messages_for_display': "\n".join(detailed_messages_for_display_list)
+    })

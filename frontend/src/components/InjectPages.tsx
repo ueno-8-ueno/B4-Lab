@@ -39,6 +39,8 @@ interface FaultConfig {
   loop_node2: string;
   loop_dummy_dest_ip: string;
   loop_duration_sec: string | number;
+  // スケジュール機能の追加
+  delay_from_first_fault_sec: string | number;
   //loop_ping_target_ip?: string; 
   //loop_ping_count?: string | number; 
 }
@@ -58,6 +60,7 @@ const DEFAULT_FAULT_CONFIG: Omit<FaultConfig, 'id'> = {
     loop_node2: '',
     loop_dummy_dest_ip: '192.168.12.10/32',
     loop_duration_sec: 10,
+    delay_from_first_fault_sec: 0, // 新規追加：デフォルトは即座に実行
     //loop_ping_target_ip: '192.168.7.2/32', 
     //loop_ping_count: 5,      
 };
@@ -72,10 +75,11 @@ interface FaultConfigBlockProps {
     allLinks: string[][];
     interfacesByNode: Record<string, string[]>;
     isFormDisabled: boolean;
+    isFirstFault: boolean; // 最初の障害かどうかを判定するプロパティ
 }
 
 const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
-    initialConfig, onConfigChange, onRemoveConfig, allContainers, allLinks, interfacesByNode, isFormDisabled
+    initialConfig, onConfigChange, onRemoveConfig, allContainers, allLinks, interfacesByNode, isFormDisabled, isFirstFault
 }) => {
     const [localConfig, setLocalConfig] = useState<FaultConfig>(initialConfig);
     const [nodeInterfaces, setNodeInterfaces] = useState<string[]>([]);
@@ -122,7 +126,34 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
     return (
         <div style={{ border: '1px dashed #ccc', padding: '15px', marginBottom: '15px', borderRadius: '5px' }}>
             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                <h4>障害設定 #{localConfig.id.substring(0, 6)}...</h4>
+                <div style={{display: 'flex', alignItems: 'center', gap: '15px'}}>
+                    <h4>障害設定 #{localConfig.id.substring(0, 6)}...</h4>
+                    {/* スケジュール設定フォーム */}
+                    {!isFirstFault && (
+                        <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}>
+                            <label htmlFor={`delay-${localConfig.id}`} style={{fontSize: '0.9em', color: '#666'}}>
+                                障害のスケジュール:
+                            </label>
+                            <span style={{fontSize: '0.9em'}}>最初の障害から</span>
+                            <input 
+                                type="number" 
+                                id={`delay-${localConfig.id}`} 
+                                value={localConfig.delay_from_first_fault_sec} 
+                                onChange={e => handleLocalChange('delay_from_first_fault_sec', e.target.value === '' ? 0 : Number(e.target.value))} 
+                                min="0" 
+                                step="1"
+                                disabled={isFormDisabled}
+                                style={{width: '60px', padding: '2px 4px', fontSize: '0.9em'}}
+                            />
+                            <span style={{fontSize: '0.9em'}}>秒後に生成</span>
+                        </div>
+                    )}
+                    {isFirstFault && (
+                        <div style={{fontSize: '0.9em', color: '#999', fontStyle: 'italic'}}>
+                            (最初の障害 - 即座に実行)
+                        </div>
+                    )}
+                </div>
                 <button type="button" onClick={() => onRemoveConfig(localConfig.id)} disabled={isFormDisabled} style={{backgroundColor: '#ff4d4f', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '3px', cursor: 'pointer'}}>削除</button>
             </div>
             <div>
@@ -196,7 +227,7 @@ const FaultConfigBlock: React.FC<FaultConfigBlockProps> = memo(({
             {showRoutingLoopTimedParams && (
                 <>
                     <div><label htmlFor={`loop_node1-${localConfig.id}`}>ループノード1:</label><select id={`loop_node1-${localConfig.id}`} value={localConfig.loop_node1} onChange={e => handleLocalChange('loop_node1', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{[...allContainers].sort().map(c => <option key={`${localConfig.id}-ln1-${c}`} value={c}>{c}</option>)}</select></div>
-                    <div><label htmlFor={`loop_node2-${localConfig.id}`}>ループノード2:</label><select id={`loop_node2-${localConfig.id}`} value={localConfig.loop_node2} onChange={e => handleLocalChange('loop_node2', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{[...allContainers].sort().map(c => <option key={`${localConfig.id}-ln2-${c}`} value={c}>{c}</option>)}</select></div>
+                    <div><label htmlFor={`loop_node2-${localConfig.id}`}>ループノード2:</label><select id={`loop_node2-${localConfig.id}`} value={localConfig.loop2} onChange={e => handleLocalChange('loop_node2', e.target.value)} disabled={isFormDisabled || allContainers.length === 0}>{allContainers.length === 0 && <option value="">コンテナなし</option>}{[...allContainers].sort().map(c => <option key={`${localConfig.id}-ln2-${c}`} value={c}>{c}</option>)}</select></div>
                     <div><label htmlFor={`loop_dummy_dest_ip-${localConfig.id}`}>ダミー宛先IP (CIDR):</label><input type="text" id={`loop_dummy_dest_ip-${localConfig.id}`} value={localConfig.loop_dummy_dest_ip} onChange={e => handleLocalChange('loop_dummy_dest_ip', e.target.value)} placeholder="e.g., 10.255.255.255/32" disabled={isFormDisabled} /></div>
                     <div><label htmlFor={`loop_duration_sec-${localConfig.id}`}>ループ持続時間 (秒):</label><input type="number" id={`loop_duration_sec-${localConfig.id}`} value={localConfig.loop_duration_sec} onChange={e => handleLocalChange('loop_duration_sec', e.target.value === '' ? '' : Number(e.target.value))} min="1" required disabled={isFormDisabled} /></div>
                     {/*<hr style={{margin: "10px 0"}} />
@@ -226,7 +257,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
     try {
       const storedValue = sessionStorage.getItem(`${TOPOLOGY_SESSION_KEY_PREFIX}${keySuffix}`);
       if (storedValue) { return JSON.parse(storedValue) as T; }
-    } catch (error) { console.error(`Error reading sessionStorage key “${TOPOLOGY_SESSION_KEY_PREFIX}${keySuffix}”:`, error); }
+    } catch (error) { console.error(`Error reading sessionStorage key "${TOPOLOGY_SESSION_KEY_PREFIX}${keySuffix}":`, error); }
     return defaultValue;
   };
 
@@ -351,6 +382,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         target_interface: firstInterface,
         loop_node1: firstContainer,
         loop_node2: secondContainer,
+        delay_from_first_fault_sec: 0, // 新規障害のデフォルト遅延
       }
     ]);
   };
@@ -391,9 +423,19 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
         setMessage({text: "生成する障害が設定されていません。", type: "warning"});
         return;
     }
+    
+    // スケジュール順にソート（delay_from_first_fault_sec の昇順）
+    const sortedFaultConfigs = [...faultConfigs].sort((a, b) => 
+        Number(a.delay_from_first_fault_sec) - Number(b.delay_from_first_fault_sec)
+    );
+    
     setIsInjecting(true); setMessage({ text: '', type: '' }); setDetailedResults([]);
-    const payloadsToSubmit = faultConfigs.map(fc => {
-      const singlePayload: any = { fault_type: fc.fault_type };
+    
+    const payloadsToSubmit = sortedFaultConfigs.map(fc => {
+      const singlePayload: any = { 
+        fault_type: fc.fault_type,
+        delay_from_first_fault_sec: Number(fc.delay_from_first_fault_sec) // スケジュール情報を含める
+      };
       if (fc.target_node) singlePayload.target_node = fc.target_node;
       if (fc.target_interface) singlePayload.target_interface = fc.target_interface;
 
@@ -479,7 +521,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
 
       <div className="form-section">
         <h2>障害生成リスト</h2>
-        {faultConfigs.map((fc) => (
+        {faultConfigs.map((fc, index) => (
           <FaultConfigBlock
             key={fc.id}
             initialConfig={fc}
@@ -489,6 +531,7 @@ const InjectPage: React.FC<InjectPageProps> = ({ apiBaseUrl }) => {
             allLinks={links}
             interfacesByNode={interfacesByContainer}
             isFormDisabled={isInjecting}
+            isFirstFault={index === 0} // 最初の障害かどうかを判定
           />
         ))}
         <button type="button" onClick={handleAddFaultConfig} disabled={isInjecting || noTopologyDataLoaded} style={{marginTop: '10px', marginRight: '10px'}}>障害設定を追加</button>
