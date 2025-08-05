@@ -98,6 +98,8 @@ def parse_iperf3_json_output(iperf_output):
             sum_data = data['end'].get('sum_received') or data['end'].get('sum') # TCP or UDP
             if sum_data:
                 throughput_bps = sum_data.get('bits_per_second')
+                if throughput_bps == 0:
+                    throughput_bps = data['end'].get('sum_sent').get('bits_per_second') #srlinuxだとreceivedが何故か0になる
                 jitter_ms = sum_data.get('jitter_ms')
                 lost_packets = sum_data.get('lost_packets')
                 lost_percent = sum_data.get('lost_percent')
@@ -200,7 +202,7 @@ def main_loop_process(stop_event_param):
 
         if iperf_server_started_flag:
             iperf_timeout = current_iperf_duration + 10 
-            iperf_tcp_cmd = ["iperf3", "-c", current_server_ip, "-t", str(current_iperf_duration), "-J", "-P", "1"]
+            iperf_tcp_cmd = ["iperf3", "-c", current_server_ip, "-t", str(current_iperf_duration), "-i", str(current_iperf_duration/10), "-J", "-P", "1"]
             #print(f"  Executing iperf TCP (duration: {current_iperf_duration}s, timeout: {iperf_timeout}s)...")
             iperf_tcp_result = run_clab_command(current_client_container, iperf_tcp_cmd, task_name="IperfTCP", timeout_override=iperf_timeout)
             raw_tcp_throughput, _, _, _ = parse_iperf3_json_output(iperf_tcp_result)
@@ -213,7 +215,7 @@ def main_loop_process(stop_event_param):
             if stop_event_param.is_set(): break
 
             udp_bandwidth = "10M"
-            iperf_udp_cmd = ["iperf3", "-c", current_server_ip, "-t", str(current_iperf_duration), "-u", "-b", udp_bandwidth, "-J", "-P", "1"]
+            iperf_udp_cmd = ["iperf3", "-c", current_server_ip, "-t", str(current_iperf_duration), "-i", str(current_iperf_duration/10), "-u", "-b", udp_bandwidth, "-J", "-P", "1"]
             #print(f"  Executing iperf UDP (duration: {current_iperf_duration}s, target_bw: {udp_bandwidth}, timeout: {iperf_timeout}s)...")
             iperf_udp_result = run_clab_command(current_client_container, iperf_udp_cmd, task_name="IperfUDP", timeout_override=iperf_timeout)
             raw_udp_throughput, raw_jitter, raw_lost_pkts, raw_lost_pct = parse_iperf3_json_output(iperf_udp_result)
