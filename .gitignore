@@ -2,6 +2,6 @@
 __pycache__
 
 *.bak
-/topology/clab-*
+/topology-*/clab-*
 
 .DS_Store
